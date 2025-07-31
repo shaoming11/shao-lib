@@ -1,6 +1,17 @@
 #pragma once
 #include "api.h"
 
+struct Point {
+    float x;
+    float y;
+};
+
+struct Pose {
+    float x;
+    float y;
+    float heading;
+};
+
 class PID {
     public:
         float kP, kI, kD, settle_error, settle_time, timeout, prev_error, integral, integral_threshold = 0;
@@ -12,18 +23,46 @@ class PID {
         bool get_settled(float error);
 };
 
+/*
+determine curvature to drive a robot to the goal point
+
+arc that joins current point and goal point is constructed
+chord length of this arc is the lookahead distance
+
+1.determine the current location of the vehicle
+2.find path point closest to the vehicle
+3.find the goal point
+4.transofrm the goal point into vehicle coordinates
+5.calculate the curvature and request the vehicle to set the steering to that curvature
+6.update the vehicle's position
+
+tracker - drives vehicle along old path
+planner - finds the path segment through new terrain
+
+*/
+
+// sources: Implementation of the Pure Pursuit Controller, controllerPurePursuit from MATLAB, Basic Pure Puruit from SIGBots Wiki
 class PurePursuit {
+    private:
+        float lookahead_distance = 0;
+        float max_angular_velocity = 0;
+        float desired_linear_velocity = 0;
+        std::vector<Point> waypoints;
+        int waypoint_index = 1;
+        Point goal_point = {0,0};
+
     public:
-        PurePursuit();
+        PurePursuit(std::vector<Point> path, float lookahead_radius, float max_angular_velocity = 0, float desired_linear_velocity = 0);
+        Point set_goal_point(std::vector<Point> intersections, Point current_pos);
+        Point get_goal_point();
+        std::vector<Point> get_intersection(Point current_pos, Point pt1, Point pt2, double lookahead_distance); // line-circle intersection, returns list of intersections
+        std::vector<Point> get_line();
+        void move_to_point();
+        // path intersection
+        // function to get line for intersection(), generate x1x2, y1y2
 };
 
-/*
-- motors
-- imu
-- rotation tracking wheels
-- left dist from center, right dist from center, back dist from center?
-- track width
-*/
+// sources: Introduction to Position Tracking by 5225A the E-bots Pilons
 class Drivetrain {
     private:
         pros::MotorGroup left_motors;
@@ -50,10 +89,9 @@ class Drivetrain {
 
 };
 
-double average(std::vector<double> list) {
-    double sum = 0;
-    for (int i = 0; i < list.size(); i++) {
-        sum += list[i];
-    }
-    return sum/list.size();
-}
+// utlis
+double average(std::vector<double> list);
+
+int sgn(float num);
+
+double distance(Point one, Point two);
