@@ -235,6 +235,34 @@ Point PurePursuit::set_goal_point(std::vector<Point> intersections, Point curren
 Point PurePursuit::get_goal_point() {
     return goal_point;
 }
+
+/**
+ * Move to the set goal point
+ *
+ * This function should be called continuously to move the robot to the set goal point.
+ * The function will change the motor velocities to move the robot to the goal point.
+ *
+ * The function will use the current position and the goal point to calculate the curvature.
+ * The function will then set the motor velocities based on the curvature.
+ */
+std::vector<float> PurePursuit::compute_errors(Pose current_pose) {
+    /*
+    current heading
+    current position
+    goal point
+
+    deteremine linear error & turn error
+    and plug into pid
+    and the robot drives
+    */
+
+    float dx = goal_point.x - current_pose.x;
+    float dy = goal_point.y - current_pose.y;
+
+    float linear_error = distance(goal_point, {current_pose.x, current_pose.y});
+    float turn_error = min_angle(atan(dy/dx));
+    return {linear_error, turn_error};
+}
 double average(std::vector<double> list) {
     double sum = 0;
     for (int i = 0; i < list.size(); i++) {
@@ -253,4 +281,15 @@ int sgn(float num) {
 
 double distance(Point one, Point two) {
     return sqrt(pow((two.x-one.x)+(two.y-one.y), 2));
+}
+
+double min_angle(double angle) {
+
+    // limitations: angles greater than 360 or less than -360
+    if (angle > 180) {
+        return angle - 360;
+    } else if (angle < -180) {
+        return angle + 360;
+    }
+    return angle;
 }

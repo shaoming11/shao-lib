@@ -57,9 +57,7 @@ class PurePursuit {
         Point get_goal_point();
         std::vector<Point> get_intersection(Point current_pos, Point pt1, Point pt2, double lookahead_distance); // line-circle intersection, returns list of intersections
         std::vector<Point> get_line();
-        void move_to_point();
-        // path intersection
-        // function to get line for intersection(), generate x1x2, y1y2
+        std::vector<float> compute_errors(Pose current_pose);
 };
 
 // sources: Introduction to Position Tracking by 5225A the E-bots Pilons
@@ -95,3 +93,5 @@ double average(std::vector<double> list);
 int sgn(float num);
 
 double distance(Point one, Point two);
+
+double min_angle(double angle);
