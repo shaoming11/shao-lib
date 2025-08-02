@@ -42,6 +42,9 @@ planner - finds the path segment through new terrain
 */
 
 // sources: Implementation of the Pure Pursuit Controller, controllerPurePursuit from MATLAB, Basic Pure Puruit from SIGBots Wiki
+/*
+https://www.ri.cmu.edu/pub_files/2009/2/Automatic_Steering_Methods_for_Autonomous_Automobile_Path_Tracking.pdf
+*/
 class PurePursuit {
     private:
         float lookahead_distance = 0;
@@ -58,6 +61,18 @@ class PurePursuit {
         std::vector<Point> get_intersection(Point current_pos, Point pt1, Point pt2, double lookahead_distance); // line-circle intersection, returns list of intersections
         std::vector<Point> get_line();
         std::vector<float> compute_errors(Pose current_pose);
+};
+
+class Ramsete {
+    public:
+        Ramsete();
+};
+
+class Kalman {
+    public:
+        Kalman();
+        void predict();
+        void update();
 };
 
 // sources: Introduction to Position Tracking by 5225A the E-bots Pilons

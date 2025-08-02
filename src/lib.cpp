@@ -260,9 +260,35 @@ std::vector<float> PurePursuit::compute_errors(Pose current_pose) {
     float dy = goal_point.y - current_pose.y;
 
     float linear_error = distance(goal_point, {current_pose.x, current_pose.y});
-    float turn_error = min_angle(atan(dy/dx));
+    float turn_error = min_angle(atan(dy/dx)); // represents angle between heading vector & look-ahead vector
+    // float curvature = 2*dx/pow(lookahead_distance, 2);
     return {linear_error, turn_error};
 }
+
+Kalman::Kalman() {
+    /*
+    bayesian statistics
+    - create a "prior" -> possibility of each distance
+    - gaussian distributions: mean (expected value?) & variance (width of the gaussian). 
+    - kalman gain = var(expected)/(var expected + var measurement)
+    1. choosing state variables
+    2. design the state transition function
+    3. design the process noise matrix
+    4. design the measurement functino
+    5. design the measurement noise matrix
+    6. set initial conditions
+    */
+}
+
+void Kalman::predict() {
+    // 
+    float A, B, C, D, P, K, x, u, y, tau, Q, R = 0;
+}
+
+void Kalman::update() {
+
+}
+
 double average(std::vector<double> list) {
     double sum = 0;
     for (int i = 0; i < list.size(); i++) {
