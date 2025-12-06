@@ -52,9 +52,12 @@ bool PID::get_settled(float error) {
     return false;
 }
 
-Drivetrain::Drivetrain(std::vector<std::int8_t> left_motor_ports, std::vector<std::int8_t> right_motor_ports, int imu_port, int left_tracker_port, int right_tracker_port, int back_tracker_port, float track_width, float left_tracker_offset, float right_tracker_offset, float back_tracker_offset):
+Drivetrain::Drivetrain(std::vector<std::int8_t> left_motor_ports, std::vector<std::int8_t> right_motor_ports, PID linear_pid, PID turn_pid, int motor_speed, int imu_port, int left_tracker_port, int right_tracker_port, int back_tracker_port, float track_width, float left_tracker_offset, float right_tracker_offset, float back_tracker_offset):
     left_motors(left_motor_ports),
     right_motors(right_motor_ports),
+    linear_pid(linear_pid),
+    turn_pid(turn_pid),
+    motor_speed(motor_speed),
     imu(imu_port),
     left_tracker(left_tracker_port),
     right_tracker(right_tracker_port),
@@ -65,9 +68,13 @@ Drivetrain::Drivetrain(std::vector<std::int8_t> left_motor_ports, std::vector<st
 {
 };
 
-std::vector<float> Drivetrain::get_position() {
+Point Drivetrain::get_position() {
     return {drive_x, drive_y};
 };
+
+Pose Drivetrain::get_pose() {
+    return {drive_x, drive_y, imu.get_heading()};
+}
 
 void Drivetrain::update_position() {
     /*
@@ -88,6 +95,7 @@ void Drivetrain::update_position() {
     // get motor encoder values
     left_pos = left_tracker.get_position();
     right_pos = right_tracker.get_position();
+    back_pos = back_tracker.get_position();
 
     // get change in encoder values in DISTANCE
     delta_l_dist = (left_pos-prev_left_pos)*wheel_diameter*M_PI/3.6;
@@ -145,7 +153,53 @@ void Drivetrain::reset_position() {
     back_tracker.set_position(0);
 }
 
-PurePursuit::PurePursuit(std::vector<Point> path, float lookahead_distance, float max_angular_velocity = 0, float desired_linear_velocity = 0):
+void Drivetrain::move(double left_voltage, double right_voltage) {
+    left_motors.move_voltage(left_voltage);
+    right_motors.move_voltage(right_voltage);
+}
+
+void Drivetrain::move_to_point(Point target) {
+    target_point = target;
+    path = {get_position(), target_point};
+
+    if (move_task != nullptr) {
+        delete(move_task);
+    }
+
+    move_task = new pros::Task(move_wrapper, this);
+}
+
+void Drivetrain::move_wrapper(void *param) {
+    Drivetrain* drive = static_cast<Drivetrain*>(param);
+    PurePursuit route(drive->path,  5);
+    std::vector<float> errors = route.compute_errors(drive->get_pose());
+    while (route.get_settled(drive->get_position()) == false) {
+        route.set_goal_point(drive->get_position());
+        errors = route.compute_errors(drive->get_pose());
+        float linear_voltage = drive->linear_pid.compute(errors[0]);
+        float turn_voltage = drive->turn_pid.compute(errors[1]);
+        drive->move(linear_voltage+turn_voltage, linear_voltage-turn_voltage);
+        pros::delay(10);
+    }
+}
+
+void Drivetrain::start_odom() {
+    if (odom_task != nullptr) {
+        delete(odom_task);
+    }
+
+    odom_task = new pros::Task(odom_wrapper, this);
+}
+
+void Drivetrain::odom_wrapper(void *param) {
+    Drivetrain* drive = static_cast<Drivetrain*>(param);
+    while (true) {
+        drive->update_position();
+        pros::delay(10);
+    }
+} 
+
+PurePursuit::PurePursuit(std::vector<Point> path, float lookahead_distance, float max_angular_velocity, float desired_linear_velocity):
     waypoints(path),
     lookahead_distance(lookahead_distance)
 {
@@ -168,7 +222,7 @@ std::vector<Point> PurePursuit::get_intersection(Point current_pos, Point pt1, P
 
     float determinant = x1*y2 - x2*y1;
 
-    float discriminant = pow(lookahead_radius, 2)*pow(dr,2)-pow(discriminant, 2);
+    float discriminant = pow(lookahead_radius, 2)*pow(dr,2)-pow(determinant, 2);
 
     float poi_x1 = (determinant*dy + sgn(dy)*dx*sqrt(discriminant))/pow(dr, 2);
     float poi_x2 = (determinant*dy - sgn(dy)*dx*sqrt(discriminant))/pow(dr, 2);
@@ -208,20 +262,25 @@ std::vector<Point> PurePursuit::get_line() {
    return {waypoints[waypoint_index], waypoints[waypoint_index-1]};
 }
 
-Point PurePursuit::set_goal_point(std::vector<Point> intersections, Point current_pos) {
+Point PurePursuit::set_goal_point(Point current_pos) {
+    std::vector<Point> intersections = get_intersection(current_pos, waypoints[waypoint_index-1], waypoints[waypoint_index], 1);
     int size = intersections.size();
 
     if (size == 2) {
         if (distance(intersections[0], waypoints[waypoint_index]) < distance(intersections[1], waypoints[waypoint_index])) {
             // closer to waypoint
             if (distance(current_pos, waypoints[waypoint_index]) < distance(intersections[0], waypoints[waypoint_index])) {
-                waypoint_index++;
+                if (!(waypoint_index >= waypoints.size())) {
+                    waypoint_index++;
+                }
             } else {
                 goal_point = intersections[0];
             }
         } else {
             if (distance(current_pos, waypoints[waypoint_index]) < distance(intersections[1], waypoints[waypoint_index])) {
-                waypoint_index++;
+                if (!(waypoint_index >= waypoints.size())) {
+                    waypoint_index++;
+                }
             } else {
                 goal_point = intersections[1];
             }
@@ -260,9 +319,16 @@ std::vector<float> PurePursuit::compute_errors(Pose current_pose) {
     float dy = goal_point.y - current_pose.y;
 
     float linear_error = distance(goal_point, {current_pose.x, current_pose.y});
-    float turn_error = min_angle(atan(dy/dx)); // represents angle between heading vector & look-ahead vector
+    float turn_error = atan2(dy,dx); // represents angle between heading vector & look-ahead vector
     // float curvature = 2*dx/pow(lookahead_distance, 2);
     return {linear_error, turn_error};
+}
+
+bool PurePursuit::get_settled(Point current_pos) {
+    if (pow((current_pos.x - goal_point.x), 2) + pow((current_pos.y - goal_point.y), 2) <= settle_radius) {
+        return true;
+    }
+    return false;
 }
 
 Kalman::Kalman() {
@@ -306,7 +372,7 @@ int sgn(float num) {
 }
 
 double distance(Point one, Point two) {
-    return sqrt(pow((two.x-one.x)+(two.y-one.y), 2));
+    return sqrt(pow((two.x-one.x), 2)+pow((two.y-one.y), 2));
 }
 
 double min_angle(double angle) {

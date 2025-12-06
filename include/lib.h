@@ -9,7 +9,7 @@ struct Point {
 struct Pose {
     float x;
     float y;
-    float heading;
+    double heading;
 };
 
 class PID {
@@ -50,17 +50,19 @@ class PurePursuit {
         float lookahead_distance = 0;
         float max_angular_velocity = 0;
         float desired_linear_velocity = 0;
+        float settle_radius = 1;
         std::vector<Point> waypoints;
         int waypoint_index = 1;
         Point goal_point = {0,0};
 
     public:
         PurePursuit(std::vector<Point> path, float lookahead_radius, float max_angular_velocity = 0, float desired_linear_velocity = 0);
-        Point set_goal_point(std::vector<Point> intersections, Point current_pos);
+        Point set_goal_point(Point current_pos);
         Point get_goal_point();
         std::vector<Point> get_intersection(Point current_pos, Point pt1, Point pt2, double lookahead_distance); // line-circle intersection, returns list of intersections
         std::vector<Point> get_line();
         std::vector<float> compute_errors(Pose current_pose);
+        bool get_settled(Point current_pos);
 };
 
 class Ramsete {
@@ -86,20 +88,34 @@ class Drivetrain {
         pros::Imu imu;
 
         float track_width;
+        float motor_speed = 600;
+        float wheel_diameter = 2.75;
+
         float left_tracker_offset;
         float right_tracker_offset;
         float back_tracker_offset;
-        float back_tracker_offset;
-        float wheel_diameter = 2.75;
         float total_l_dist, total_r_dist, total_s_dist, left_pos, right_pos, back_pos, prev_left_pos, prev_right_pos, prev_b_pos, delta_l_dist, delta_r_dist, delta_s_dist, reset_l_pos, reset_r_pos, reset_s_pos = 0;
         float prev_drive_x, prev_drive_y, drive_x, drive_y, x_offset, y_offset, x_global_offset, y_global_offset = 0;
         float avg_orientation, prev_orientation, orientation, reset_orientation, delta_theta = 0;
+
+        Point target_point = {0,0};
+        std::vector<Point> path = {{0,0}, {0,0}};
+
+        pros::Task *odom_task = nullptr;
+        pros::Task *move_task = nullptr;
+        PID linear_pid;
+        PID turn_pid;
     public:
-        Drivetrain(std::vector<std::int8_t> left_motor_ports, std::vector<std::int8_t> right_motor_ports, int imu_port, int left_tracker_port, int right_tracker_port, int back_tracker_port, float track_width, float left_tracker_offset, float right_tracker_offset, float back_tracker_offset);
-        std::vector<float> get_position();
+        Drivetrain(std::vector<std::int8_t> left_motor_ports, std::vector<std::int8_t> right_motor_ports, PID linear_pid, PID turn_pid, int motor_speed, int imu_port, int left_tracker_port, int right_tracker_port, int back_tracker_port, float track_width, float left_tracker_offset, float right_tracker_offset, float back_tracker_offset);
+        Point get_position();
+        Pose get_pose();
         void update_position();
         void reset_position();
-
+        void move(double left_voltage, double right_voltage);
+        void move_to_point(Point target_point);
+        static void move_wrapper(void *param);
+        void start_odom();
+        static void odom_wrapper(void *param);
 };
 
 // utlis
