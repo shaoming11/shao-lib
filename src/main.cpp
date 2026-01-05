@@ -1,6 +1,9 @@
 #include "main.h"
 #include "lib.h"
 
+// PNEUMATICS, ADI
+#define LOAD_PORT 'A'
+
 /**
  * A callback function for LLEMU's center button.
  *
@@ -45,6 +48,8 @@ std::vector<std::int8_t> left_mg({1, -2, 3});    // Creates a motor group with f
 std::vector<std::int8_t> right_mg({-4, 5, -6});  // Creates a motor group with forwards port 5 and reversed ports 4 & 6
 
 OWDrivetrain drivetrain(left_mg, right_mg, linear, angular, 600, 7, 8, 9, 13, 6.7, 11, 12, 13, 14);
+
+pros::ADIDigitalOut loader(LOAD_PORT);
 
 void initialize() {
 	pros::lcd::initialize();
@@ -103,8 +108,10 @@ void autonomous() {}
  */
 void opcontrol() {
 	pros::Controller master(pros::E_CONTROLLER_MASTER);
-	pros::Motor intake(1);
-	pros::Motor stick(1);
+	pros::Motor intake(15);
+	pros::Motor stick(14);
+
+	bool loader_bool = false;
 
 	while (true) {
 		pros::lcd::print(0, "%d %d %d", (pros::lcd::read_buttons() & LCD_BTN_LEFT) >> 2,
@@ -113,9 +120,12 @@ void opcontrol() {
 		
 		// Other Subsytems
 		if (master.get_digital(DIGITAL_L1)) stick.move(127);
-		if (master.get_digital(DIGITAL_L2)) stick.move(127);
+		if (master.get_digital(DIGITAL_L2)) stick.move(-127);
 		if (master.get_digital(DIGITAL_R1)) intake.move(127);
 		if (master.get_digital(DIGITAL_R2)) intake.move(-127);
+		
+		// Pneumatics
+		if (master.get_digital_new_press(DIGITAL_A)) loader.set_value(!loader_bool);
 
 		// Arcade control scheme
 		int dir = master.get_analog(ANALOG_LEFT_Y);    // Gets amount forward/backward from left joystick
