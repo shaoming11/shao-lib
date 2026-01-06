@@ -820,12 +820,20 @@ void OWDrivetrain::turn_wrapper(void *param) {
 Measurement OWDrivetrain::get_measurement(State input) {
     /* from input predicted state estimate, 
     apply measurement model to get measurement for each sigma point. 
-    next step: plugging in each measurement to generate state estimate for each sigma point. 
-    then it will return a list of sigma points 
-
-
-    NEED TO COMPLETE
+    This function maps the state space to measurement space.
     */
+    
+    Measurement measurement;
+    
+    // Get current sensor readings
+    measurement.l = left_dist.get();    // Left distance sensor
+    measurement.r = right_dist.get();   // Right distance sensor  
+    measurement.f = front_dist.get();   // Front distance sensor
+    measurement.b = back_dist.get();    // Back distance sensor
+    measurement.rotation = left_tracker.get_position(); // Rotation encoder
+    measurement.heading = heading;      // IMU heading
+    
+    return measurement;
 }
 
 UKF::UKF(OWDrivetrain& drivetrain, State state, State mean, State sd, std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> p_noise, std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> m_noise, float alpha, float beta, float kappa, std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> se_cov):
@@ -846,6 +854,10 @@ UKF::UKF(OWDrivetrain& drivetrain, State state, State mean, State sd, std::array
 
     predicted_measurement = {
         0,0,0,0,0,0
+    };
+
+    predicted_state = {
+        0,0,0,0,0,0,0
     };
 
     se_cov[0][0] = pow(mean.x, 2);
@@ -910,7 +922,7 @@ State list_to_state(std::array<float, STATE_DIMENSIONS> col) {
 
 void UKF::set_sigma_points() {
     // Set sigma points using root cP, c = alpha^2 (M + kappa); M -> number of states/sigma points
-    points_sigma[0] = current;
+    points_sigma[0] = current; 
 
     for (int i=0;i<STATE_DIMENSIONS;i++) {
         std::array<float, STATE_DIMENSIONS> col = UKF::matrix_sqrt(multiply_const_mat(se_cov, scaling_factor))[i];
@@ -959,7 +971,7 @@ Measurement& Measurement::operator+=(const Measurement& rhs) {
 
 inline Measurement operator+(const Measurement& lhs, const Measurement& rhs) {
     Measurement result = lhs;
-    result += lhs;
+    result += rhs;
     return result;
 }
 
@@ -974,7 +986,7 @@ Measurement& Measurement::operator-=(const Measurement& rhs) {
 
 inline Measurement operator-(const Measurement& lhs, const Measurement& rhs) {
     Measurement result = lhs;
-    result -= lhs;
+    result -= rhs;
     return result;
 }
 
@@ -1006,9 +1018,8 @@ void UKF::combine_predicted_measurements() {
         mean_weight[i] = 1/(2*pow(alpha,2)*(num_states+kappa));
     }
 
-    for (int i=0;i<2*num_states;i++) {
-        current += points_sigma[i] * mean_weight[i];
-    }
+    // Reset predicted_measurement to zero first
+    predicted_measurement = {0,0,0,0,0,0};
 
     for (int i=0; i<2*num_states; i++) {
         predicted_measurement += measurement_sigma[i] * mean_weight[i];
@@ -1021,77 +1032,246 @@ void UKF::est_cov_predicted_measurements() {
     */
 
     cov_weight[0] = (2 - pow(alpha,2) + beta) - num_states/(pow(alpha,2)*(num_states + kappa));
-    float temp_cov[MEASUREMENT_DIMENSIONS][2*num_states+1];
 
     for (int i=0;i<2*num_states;i++) {
         if (i>0) {
             cov_weight[i] = 1/(2*pow(alpha,2)*(num_states + kappa));
         }
 
-        temp_cov[0][i] = measurement_sigma[i].l;
-        temp_cov[1][i] = measurement_sigma[i].r;
-        temp_cov[2][i] = measurement_sigma[i].f;
-        temp_cov[3][i] = measurement_sigma[i].b;
-        temp_cov[4][i] = measurement_sigma[i].rotation;
-        temp_cov[5][i] = measurement_sigma[i].heading;
+        measurement_vals[0][i] = measurement_sigma[i].l;
+        measurement_vals[1][i] = measurement_sigma[i].r;
+        measurement_vals[2][i] = measurement_sigma[i].f;
+        measurement_vals[3][i] = measurement_sigma[i].b;
+        measurement_vals[4][i] = measurement_sigma[i].rotation;
+        measurement_vals[5][i] = measurement_sigma[i].heading;
     }
 
-    temp_cov[0][2*num_states+1] = predicted_measurement.l;
-    temp_cov[1][2*num_states+1] = predicted_measurement.r;
-    temp_cov[2][2*num_states+1] = predicted_measurement.f;
-    temp_cov[3][2*num_states+1] = predicted_measurement.b;
-    temp_cov[4][2*num_states+1] = predicted_measurement.rotation;
-    temp_cov[5][2*num_states+1] = predicted_measurement.heading;
+    measurement_vals[0][2*num_states+1] = predicted_measurement.l;
+    measurement_vals[1][2*num_states+1] = predicted_measurement.r;
+    measurement_vals[2][2*num_states+1] = predicted_measurement.f;
+    measurement_vals[3][2*num_states+1] = predicted_measurement.b;
+    measurement_vals[4][2*num_states+1] = predicted_measurement.rotation;
+    measurement_vals[5][2*num_states+1] = predicted_measurement.heading;
 
     for (int i=0;i<MEASUREMENT_DIMENSIONS;i++) {
         for (int j=0;j<MEASUREMENT_DIMENSIONS;j++) {
             measurement_cov[i][j] = 0;
             for (int k=0;k<2*num_states;k++) {
-                measurement_cov[i][j] += cov_weight[k]*(temp_cov[i][k]-temp_cov[i][2*num_states+1]) * (temp_cov[j][k]-temp_cov[j][2*num_states+1]);
+                measurement_cov[i][j] += cov_weight[k]*(measurement_vals[i][k]-measurement_vals[i][2*num_states+1]) * (measurement_vals[j][k]-measurement_vals[j][2*num_states+1]);
             }
+            // Add measurement noise R to the measurement covariance
+            measurement_cov[i][j] += measurement_noise[i][j];
         }
     }
+}
+
+void UKF::state_to_list() {
+    for (int i=0;i<2*num_states;i++) {
+        if (i>0) {
+            cov_weight[i] = 1/(2*pow(alpha,2)*(num_states + kappa));
+        }
+
+        state_vals[0][i] = points_sigma[i].x;
+        state_vals[1][i] = points_sigma[i].y;
+        state_vals[2][i] = points_sigma[i].heading;
+        state_vals[3][i] = points_sigma[i].lv;
+        state_vals[4][i] = points_sigma[i].av;
+        state_vals[5][i] = points_sigma[i].imu_bias;
+        state_vals[6][i] = points_sigma[i].encoder_bias;
+    }
+
+    state_vals[0][2*num_states+1] = predicted_state.x;
+    state_vals[1][2*num_states+1] = predicted_state.y;
+    state_vals[2][2*num_states+1] = predicted_state.heading;
+    state_vals[3][2*num_states+1] = predicted_state.lv;
+    state_vals[4][2*num_states+1] = predicted_state.av;
+    state_vals[5][2*num_states+1] = predicted_state.imu_bias;
+    state_vals[6][2*num_states+1] = predicted_state.encoder_bias;
 }
 
 void UKF::est_cross_cov() {
     /*
     State * Measurement function to return a matrix xy
-
-    std::array<std::array<float, STATE_DIMENSIONS>, MEASUREMENT_DIMENSIONS> se_me_cov;
-
-    needed: 
-    - list of size 7x30 for state
-    - list of size 6x30 for measurement
-    - const = 1/2/scaling_factor
-    from i 0-7:
-        from j 0-6:
-            se_me_cov[i][j] = 0;
-            from k (0-30):
-                se_me_cov[i][j] += (X[i][k]-X[i][31])*(Y[i][k]-Y[i][31])
-            se_me_cov[i][j] *= 1/2/scaling_factor
+    Cross-covariance between state and measurement
     */
-    float sum = 0;
-
-
-
-    // x
     
-
-    // y
-
-
-    // heading
+    // Populate state and measurement arrays
+    state_to_list();
+    
+    // Initialize cross-covariance matrix
+    for (int i=0;i<STATE_DIMENSIONS;i++) {
+        for (int j=0;j<MEASUREMENT_DIMENSIONS;j++) {
+            se_me_cov[i][j] = 0;
+            // Include all sigma points (start from k=0, not k=1)
+            for (int k=0;k<2*num_states;k++) {
+                se_me_cov[i][j] += cov_weight[k] * 
+                    (state_vals[i][k]-state_vals[i][2*num_states+1]) * 
+                    (measurement_vals[j][k]-measurement_vals[j][2*num_states+1]);
+            }
+        }
+    }
 }
 
-void UKF::kalman_gain() {
+void UKF::obtain_est() {
     /*
     Obtain the estimated state and state estimation error covariance at time step k.
     */
+    
+    // Get actual measurement from drivetrain
+    Measurement actual_measurement = drivetrain.get_measurement(current);
+    
+    // Calculate measurement residual
+    Measurement residual;
+    residual.l = actual_measurement.l - predicted_measurement.l;
+    residual.r = actual_measurement.r - predicted_measurement.r;
+    residual.f = actual_measurement.f - predicted_measurement.f;
+    residual.b = actual_measurement.b - predicted_measurement.b;
+    residual.rotation = actual_measurement.rotation - predicted_measurement.rotation;
+    residual.heading = actual_measurement.heading - predicted_measurement.heading;
+    
+    // Convert residual to vector for matrix operations
+    float residual_vec[MEASUREMENT_DIMENSIONS] = {
+        residual.l, residual.r, residual.f, residual.b, residual.rotation, residual.heading
+    };
+    
+    // Calculate Kalman gain: K = P_xy * inv(P_yy)
+    // First compute inverse of measurement covariance matrix
+    std::array<std::array<float, MEASUREMENT_DIMENSIONS>, MEASUREMENT_DIMENSIONS> inv_measurement_cov = 
+        inverse_mat_66(measurement_cov);
+    
+    // Multiply cross-covariance by inverse measurement covariance to get Kalman gain
+    std::array<std::array<float, STATE_DIMENSIONS>, MEASUREMENT_DIMENSIONS> kalman_gain = 
+        multiply_mat_76_66(se_me_cov, inv_measurement_cov);
+    
+    // Update state estimate: x = x_predicted + K * (z - h(x_predicted))
+    for (int i = 0; i < STATE_DIMENSIONS; i++) {
+        float correction = 0;
+        for (int j = 0; j < MEASUREMENT_DIMENSIONS; j++) {
+            correction += kalman_gain[i][j] * residual_vec[j];
+        }
+        
+        switch(i) {
+            case 0: current.x = predicted_state.x + correction; break;
+            case 1: current.y = predicted_state.y + correction; break;
+            case 2: current.heading = predicted_state.heading + correction; break;
+            case 3: current.lv = predicted_state.lv + correction; break;
+            case 4: current.av = predicted_state.av + correction; break;
+            case 5: current.imu_bias = predicted_state.imu_bias + correction; break;
+            case 6: current.encoder_bias = predicted_state.encoder_bias + correction; break;
+        }
+    }
+    
+    // Update state estimation error covariance: P = P_predicted - K * P_yy * K^T
+    std::array<std::array<float, STATE_DIMENSIONS>, MEASUREMENT_DIMENSIONS> k_pyy = 
+        multiply_mat_76_66(kalman_gain, measurement_cov);
+    
+    std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> k_pyy_kt = 
+        multiply_mat_76_67(k_pyy, transpose_mat_76(kalman_gain));
+    
+    se_cov = subtract_mat_77(predicted_se_cov, k_pyy_kt);
 }
 
-void UKF::update() {
-    // correct()?
+void UKF::predict_set_sigma_points() {
+    // Set sigma points using root cP, c = alpha^2 (M + kappa); M -> number of states/sigma points
+    points_sigma[0] = next; 
+
+    for (int i=0;i<STATE_DIMENSIONS;i++) {
+        std::array<float, STATE_DIMENSIONS> col = UKF::matrix_sqrt(multiply_const_mat(se_cov, scaling_factor))[i];
+        offset_sigma[i] = list_to_state(col);
+
+    }
+
+    for (int i=0;i<STATE_DIMENSIONS;i++) {
+        std::array<float, STATE_DIMENSIONS> col = UKF::matrix_sqrt(multiply_const_mat(se_cov, -scaling_factor))[i];
+        offset_sigma[i+STATE_DIMENSIONS] = list_to_state(col);
+    }
+
+    for (int i=0;i<2*num_states;i++) {
+        points_sigma[i] = next + offset_sigma[i];
+    }
 } 
+
+State UKF::state_transition(const State& sigma_point, double left_voltage, double right_voltage, double dt) {
+    State next_state;
+    
+    // Convert voltages to wheel velocities (simplified model)
+    // Assume linear relationship between voltage and wheel speed
+    const double voltage_to_velocity = 0.1; // This should be calibrated based on your robot
+    const double wheel_radius = 0.05; // meters, adjust based on your robot
+    const double track_width = 0.3; // meters, distance between wheels, adjust based on your robot
+    
+    double left_wheel_velocity = left_voltage * voltage_to_velocity;
+    double right_wheel_velocity = right_voltage * voltage_to_velocity;
+    
+    // Differential drive kinematics
+    double linear_velocity = (left_wheel_velocity + right_wheel_velocity) / 2.0;
+    double angular_velocity = (right_wheel_velocity - left_wheel_velocity) / track_width;
+    
+    // Add biases
+    linear_velocity += sigma_point.encoder_bias;
+    angular_velocity += sigma_point.imu_bias;
+    
+    // State propagation using kinematic model
+    next_state.x = sigma_point.x + linear_velocity * cos(sigma_point.heading) * dt;
+    next_state.y = sigma_point.y + linear_velocity * sin(sigma_point.heading) * dt;
+    next_state.heading = sigma_point.heading + angular_velocity * dt;
+    
+    // Velocity states with simple dynamics
+    next_state.lv = linear_velocity; // Could add acceleration model here
+    next_state.av = angular_velocity; // Could add acceleration model here
+    
+    // Bias states (assumed to be random walk)
+    next_state.imu_bias = sigma_point.imu_bias;
+    next_state.encoder_bias = sigma_point.encoder_bias;
+    
+    return next_state;
+}
+
+void UKF::apply_state_transition(double left_voltage, double right_voltage, double dt) {
+    // Apply state transition function to all sigma points to get predicted sigma points
+    for (int i = 0; i < 2*num_states; i++) {
+        predicted_points_sigma[i] = state_transition(points_sigma[i], left_voltage, right_voltage, dt);
+    }
+}
+
+void UKF::compute_predicted_states() {
+    next = {0,0,0,0,0,0,0};
+    for (int i=0;i<2*num_states;i++) {
+        next += predicted_points_sigma[i]*mean_weight[i];
+    }
+}
+void UKF::compute_predicted_cov() {
+    for (int i = 0; i < STATE_DIMENSIONS; i++) {
+        for (int j = 0; j < STATE_DIMENSIONS; j++) {
+            predicted_se_cov[i][j] = 0;
+        }
+    }
+    for (int i = 0; i < 2*num_states; i++) {
+        State diff;
+        diff.x = predicted_points_sigma[i].x - next.x;
+        diff.y = predicted_points_sigma[i].y - next.y;
+        diff.heading = predicted_points_sigma[i].heading - next.heading;
+        diff.lv = predicted_points_sigma[i].lv - next.lv;
+        diff.av = predicted_points_sigma[i].av - next.av;
+        diff.imu_bias = predicted_points_sigma[i].imu_bias - next.imu_bias;
+        diff.encoder_bias = predicted_points_sigma[i].encoder_bias - next.encoder_bias;
+        
+        float state_vec[STATE_DIMENSIONS] = {diff.x, diff.y, diff.heading, diff.lv, diff.av, diff.imu_bias, diff.encoder_bias};
+        
+        for (int row = 0; row < STATE_DIMENSIONS; row++) {
+            for (int col = 0; col < STATE_DIMENSIONS; col++) {
+                predicted_se_cov[row][col] += cov_weight[i] * state_vec[row] * state_vec[col];
+            }
+        }
+    }
+    
+    // Add process noise Q to the predicted covariance
+    for (int i = 0; i < STATE_DIMENSIONS; i++) {
+        for (int j = 0; j < STATE_DIMENSIONS; j++) {
+            predicted_se_cov[i][j] += process_noise[i][j];
+        }
+    }
+}
 
 void UKF::correct() {
     // update state & state estimation error covariance. collect data from drivetrain
@@ -1114,31 +1294,31 @@ void UKF::correct() {
     est_cross_cov();
 
     // calculate kalman gain, estimate state, state estimation error covariance matrix
+    obtain_est();
 }
 
-void UKF::predict() {
-    // choose sigma points.
+void UKF::predict(double left_voltage, double right_voltage, double dt) {
+    // choose sigma points
+    predict_set_sigma_points();
         // determine each sigma point offset vector
         // determine 
-    
-    // using drivetrain compute predicted State
+
+    // apply state transition to sigma points
+    apply_state_transition(left_voltage, right_voltage, dt);
+
+    // using state transition compute predicted State
+    compute_predicted_states();
         // compute predicted state
         // compute weight_mean for each sigma point
     
     // compute covariance of predicted state
+    compute_predicted_cov();
         // compute state estimate error matrix
         // weight covariance for each sigma point from 1-2*num_states -> (2-pow(alpha,2)+beta) - num_states/(pow(alpha, 2) * (num_states + kappa))
 } 
 
-void UKF::run() {
-    this->update();
+void UKF::run(double left_voltage, double right_voltage, double dt) {
     this->correct();
-    this->predict();
+    this->predict(left_voltage, right_voltage, dt);
     time_step++;
 }
-
-/*
-unclear things
-- calculating covariance matrices
-- weight mean & weight covariance
-*/

@@ -141,3 +141,139 @@ std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> multiply_const
 float deg_to_rad(float angle) {
     return M_PI*angle/180;
 }
+
+// Additional matrix operations for UKF
+std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> subtract_mat_77(
+    std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> one, 
+    std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> two) {
+    
+    std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> result;
+    
+    for (int i = 0; i < STATE_DIMENSIONS; i++) {
+        for (int j = 0; j < STATE_DIMENSIONS; j++) {
+            result[i][j] = one[i][j] - two[i][j];
+        }
+    }
+    
+    return result;
+}
+
+std::array<std::array<float, MEASUREMENT_DIMENSIONS>, MEASUREMENT_DIMENSIONS> inverse_mat_66(
+    std::array<std::array<float, MEASUREMENT_DIMENSIONS>, MEASUREMENT_DIMENSIONS> matrix) {
+    
+    std::array<std::array<float, MEASUREMENT_DIMENSIONS>, MEASUREMENT_DIMENSIONS> result;
+    std::array<std::array<float, MEASUREMENT_DIMENSIONS>, MEASUREMENT_DIMENSIONS * 2> augmented;
+    
+    // Create augmented matrix [A | I]
+    for (int i = 0; i < MEASUREMENT_DIMENSIONS; i++) {
+        for (int j = 0; j < MEASUREMENT_DIMENSIONS; j++) {
+            augmented[i][j] = matrix[i][j];
+            augmented[i][j + MEASUREMENT_DIMENSIONS] = (i == j) ? 1.0f : 0.0f;
+        }
+    }
+    
+    // Gaussian elimination with partial pivoting
+    for (int i = 0; i < MEASUREMENT_DIMENSIONS; i++) {
+        // Find pivot
+        int max_row = i;
+        for (int k = i + 1; k < MEASUREMENT_DIMENSIONS; k++) {
+            if (fabs(augmented[k][i]) > fabs(augmented[max_row][i])) {
+                max_row = k;
+            }
+        }
+        
+        // Swap rows if needed
+        if (max_row != i) {
+            for (int k = 0; k < MEASUREMENT_DIMENSIONS * 2; k++) {
+                float temp = augmented[i][k];
+                augmented[i][k] = augmented[max_row][k];
+                augmented[max_row][k] = temp;
+            }
+        }
+        
+        // Make diagonal element 1
+        float pivot = augmented[i][i];
+        if (fabs(pivot) < 1e-10) {
+            // Matrix is singular, return identity as fallback
+            for (int row = 0; row < MEASUREMENT_DIMENSIONS; row++) {
+                for (int col = 0; col < MEASUREMENT_DIMENSIONS; col++) {
+                    result[row][col] = (row == col) ? 1.0f : 0.0f;
+                }
+            }
+            return result;
+        }
+        
+        for (int k = 0; k < MEASUREMENT_DIMENSIONS * 2; k++) {
+            augmented[i][k] /= pivot;
+        }
+        
+        // Eliminate column
+        for (int k = 0; k < MEASUREMENT_DIMENSIONS; k++) {
+            if (k != i) {
+                float factor = augmented[k][i];
+                for (int j = 0; j < MEASUREMENT_DIMENSIONS * 2; j++) {
+                    augmented[k][j] -= factor * augmented[i][j];
+                }
+            }
+        }
+    }
+    
+    // Extract result matrix
+    for (int i = 0; i < MEASUREMENT_DIMENSIONS; i++) {
+        for (int j = 0; j < MEASUREMENT_DIMENSIONS; j++) {
+            result[i][j] = augmented[i][j + MEASUREMENT_DIMENSIONS];
+        }
+    }
+    
+    return result;
+}
+
+std::array<std::array<float, STATE_DIMENSIONS>, MEASUREMENT_DIMENSIONS> multiply_mat_76_66(
+    std::array<std::array<float, STATE_DIMENSIONS>, MEASUREMENT_DIMENSIONS> mat1,
+    std::array<std::array<float, MEASUREMENT_DIMENSIONS>, MEASUREMENT_DIMENSIONS> mat2) {
+    
+    std::array<std::array<float, STATE_DIMENSIONS>, MEASUREMENT_DIMENSIONS> result;
+    
+    for (int i = 0; i < STATE_DIMENSIONS; i++) {
+        for (int j = 0; j < MEASUREMENT_DIMENSIONS; j++) {
+            result[i][j] = 0;
+            for (int k = 0; k < MEASUREMENT_DIMENSIONS; k++) {
+                result[i][j] += mat1[i][k] * mat2[k][j];
+            }
+        }
+    }
+    
+    return result;
+}
+
+std::array<std::array<float, MEASUREMENT_DIMENSIONS>, STATE_DIMENSIONS> transpose_mat_76(
+    std::array<std::array<float, STATE_DIMENSIONS>, MEASUREMENT_DIMENSIONS> matrix) {
+    
+    std::array<std::array<float, MEASUREMENT_DIMENSIONS>, STATE_DIMENSIONS> result;
+    
+    for (int i = 0; i < MEASUREMENT_DIMENSIONS; i++) {
+        for (int j = 0; j < STATE_DIMENSIONS; j++) {
+            result[i][j] = matrix[j][i];
+        }
+    }
+    
+    return result;
+}
+
+std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> multiply_mat_76_67(
+    std::array<std::array<float, STATE_DIMENSIONS>, MEASUREMENT_DIMENSIONS> mat1,
+    std::array<std::array<float, MEASUREMENT_DIMENSIONS>, STATE_DIMENSIONS> mat2) {
+    
+    std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> result;
+    
+    for (int i = 0; i < STATE_DIMENSIONS; i++) {
+        for (int j = 0; j < STATE_DIMENSIONS; j++) {
+            result[i][j] = 0;
+            for (int k = 0; k < MEASUREMENT_DIMENSIONS; k++) {
+                result[i][j] += mat1[i][k] * mat2[k][j];
+            }
+        }
+    }
+    
+    return result;
+}

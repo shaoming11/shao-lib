@@ -15,3 +15,22 @@ extern std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> identit
 
 std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> add_mat(std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> one, std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> two);
 std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> multiply_const_mat(std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> matrix, float scale);
+
+// Additional matrix operations for UKF
+std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> subtract_mat_77(
+    std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> one, 
+    std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> two);
+
+std::array<std::array<float, MEASUREMENT_DIMENSIONS>, MEASUREMENT_DIMENSIONS> inverse_mat_66(
+    std::array<std::array<float, MEASUREMENT_DIMENSIONS>, MEASUREMENT_DIMENSIONS> matrix);
+
+std::array<std::array<float, STATE_DIMENSIONS>, MEASUREMENT_DIMENSIONS> multiply_mat_76_66(
+    std::array<std::array<float, STATE_DIMENSIONS>, MEASUREMENT_DIMENSIONS> mat1,
+    std::array<std::array<float, MEASUREMENT_DIMENSIONS>, MEASUREMENT_DIMENSIONS> mat2);
+
+std::array<std::array<float, MEASUREMENT_DIMENSIONS>, STATE_DIMENSIONS> transpose_mat_76(
+    std::array<std::array<float, STATE_DIMENSIONS>, MEASUREMENT_DIMENSIONS> matrix);
+
+std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> multiply_mat_76_67(
+    std::array<std::array<float, STATE_DIMENSIONS>, MEASUREMENT_DIMENSIONS> mat1,
+    std::array<std::array<float, MEASUREMENT_DIMENSIONS>, STATE_DIMENSIONS> mat2);

@@ -114,12 +114,13 @@ class UKF {
         State sd;
 
         // States
-        State current;
-        State prev;
-        State next;
+        State current; // k | k
+        State prev; // k-1 | k-1?
+        State next; // k+1 | k
+        State predicted_state; // k | k-1
 
         // Measured State
-        State measured;
+        State measured_state;
 
         // each time step: state, measurement, 
         int num_states = 2*STATE_DIMENSIONS+1;// 2n+1; n is number of dimensions of the state
@@ -130,17 +131,23 @@ class UKF {
         std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> process_noise;
         std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> measurement_noise;
         std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> se_cov; // state estimation error covariance matrix
+        std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> predicted_se_cov; // predicted k+1 
         std::array<std::array<float, MEASUREMENT_DIMENSIONS>, MEASUREMENT_DIMENSIONS> measurement_cov; // measurement covariance matrix
         std::array<std::array<float, STATE_DIMENSIONS>, MEASUREMENT_DIMENSIONS> se_me_cov; // cross covariance between state prediction and measurement
+
+        float state_vals[STATE_DIMENSIONS][(2*STATE_DIMENSIONS+1)+1];
+        float measurement_vals[MEASUREMENT_DIMENSIONS][2*(2*STATE_DIMENSIONS+1)+1];
 
 
         // sigma vector
         State points_sigma[2*(2*STATE_DIMENSIONS+1)];
         State offset_sigma[2*(2*STATE_DIMENSIONS+1)]; // Predicted sigma estimates
+        State predicted_points_sigma[2*(2*STATE_DIMENSIONS+1)];
+        State predicted_offset_sigma[2*(2*STATE_DIMENSIONS+1)];
         Measurement measurement_sigma[2*(2*STATE_DIMENSIONS+1)];
         Measurement predicted_measurement;
         std::array<float, 2*(2*STATE_DIMENSIONS+1)> mean_weight;
-        std::array<float, 2*STATE_DIMENSIONS+1> cov_weight;
+        std::array<float, 2*(2*STATE_DIMENSIONS+1)> cov_weight;
         
 
         // Reference to drivetrain for measurements
@@ -158,14 +165,21 @@ class UKF {
         void compute_predicted_measurements();
         void combine_predicted_measurements();
         void est_cov_predicted_measurements();
+        void state_to_list();
         void est_cross_cov();
-        void kalman_gain();
+        void obtain_est(); 
+
+        // Predict
+        void predict_set_sigma_points();
+        State state_transition(const State& sigma_point, double left_voltage, double right_voltage, double dt);
+        void apply_state_transition(double left_voltage, double right_voltage, double dt);
+        void compute_predicted_states();
+        void compute_predicted_cov();
 
         // Macro Functions
-        void update(); // update state & state estimation error covariance. collect data from drivetrain. compute
-        void predict(); // 
+        void predict(double left_voltage, double right_voltage, double dt); // 
         void correct();
-        void run();
+        void run(double left_voltage, double right_voltage, double dt);
 };
 
 // sources: Introduction to Position Tracking by 5225A the E-bots Pilons

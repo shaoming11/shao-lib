@@ -118,7 +118,7 @@ void opcontrol() {
 		                 (pros::lcd::read_buttons() & LCD_BTN_CENTER) >> 1,
 		                 (pros::lcd::read_buttons() & LCD_BTN_RIGHT) >> 0);  // Prints status of the emulated screen LCDs
 		
-		// Other Subsytems
+		// Subsytems
 		if (master.get_digital(DIGITAL_L1)) stick.move(127);
 		if (master.get_digital(DIGITAL_L2)) stick.move(-127);
 		if (master.get_digital(DIGITAL_R1)) intake.move(127);
