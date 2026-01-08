@@ -836,6 +836,89 @@ Measurement OWDrivetrain::get_measurement(State input) {
     return measurement;
 }
 
+std::vector<Measurement> OWDrivetrain::sample_all_sensors(int num_samples, int delay_ms) {
+    std::vector<Measurement> samples;
+    samples.reserve(num_samples);
+    
+    for (int i = 0; i < num_samples; i++) {
+        Measurement sample;
+        
+        sample.l = left_dist.get();
+        sample.r = right_dist.get();
+        sample.f = front_dist.get();
+        sample.b = back_dist.get();
+        sample.rotation = left_tracker.get_position();
+        sample.heading = (min_angle(imu.get_heading()) + min_angle(imu2.get_heading())) / 2.0f;
+        
+        samples.push_back(sample);
+        
+        if (i < num_samples - 1) {
+            pros::delay(delay_ms);
+        }
+    }
+    
+    return samples;
+}
+
+std::array<std::array<float, MEASUREMENT_DIMENSIONS>, MEASUREMENT_DIMENSIONS> OWDrivetrain::calculate_measurement_noise_matrix(const std::vector<Measurement>& samples) {
+    std::array<std::array<float, MEASUREMENT_DIMENSIONS>, MEASUREMENT_DIMENSIONS> noise_matrix;
+    
+    if (samples.empty()) {
+        for (int i = 0; i < MEASUREMENT_DIMENSIONS; i++) {
+            for (int j = 0; j < MEASUREMENT_DIMENSIONS; j++) {
+                noise_matrix[i][j] = (i == j) ? 1.0f : 0.0f;
+            }
+        }
+        return noise_matrix;
+    }
+    
+    float means[MEASUREMENT_DIMENSIONS] = {0};
+    
+    for (const auto& sample : samples) {
+        means[0] += sample.l;
+        means[1] += sample.r;
+        means[2] += sample.f;
+        means[3] += sample.b;
+        means[4] += sample.rotation;
+        means[5] += sample.heading;
+    }
+    
+    for (int i = 0; i < MEASUREMENT_DIMENSIONS; i++) {
+        means[i] /= samples.size();
+    }
+    
+    for (int i = 0; i < MEASUREMENT_DIMENSIONS; i++) {
+        for (int j = 0; j < MEASUREMENT_DIMENSIONS; j++) {
+            noise_matrix[i][j] = 0.0f;
+        }
+    }
+    
+    for (const auto& sample : samples) {
+        float deviations[MEASUREMENT_DIMENSIONS] = {
+            sample.l - means[0],
+            sample.r - means[1], 
+            sample.f - means[2],
+            sample.b - means[3],
+            sample.rotation - means[4],
+            sample.heading - means[5]
+        };
+        
+        for (int i = 0; i < MEASUREMENT_DIMENSIONS; i++) {
+            for (int j = 0; j < MEASUREMENT_DIMENSIONS; j++) {
+                noise_matrix[i][j] += deviations[i] * deviations[j];
+            }
+        }
+    }
+    
+    for (int i = 0; i < MEASUREMENT_DIMENSIONS; i++) {
+        for (int j = 0; j < MEASUREMENT_DIMENSIONS; j++) {
+            noise_matrix[i][j] /= (samples.size() - 1);
+        }
+    }
+    
+    return noise_matrix;
+}
+
 UKF::UKF(OWDrivetrain& drivetrain, State state, State mean, State sd, std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> p_noise, std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> m_noise, float alpha, float beta, float kappa, std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> se_cov):
     drivetrain(drivetrain),
     current(state),

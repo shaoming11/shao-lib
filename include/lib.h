@@ -292,6 +292,9 @@ class OWDrivetrain { // one wheel tracker drivetrain
         Point dist_est_pos();
         Point tracker_est_pos();
 
+        std::vector<Measurement> sample_all_sensors(int num_samples, int delay_ms = 10);
+        std::array<std::array<float, MEASUREMENT_DIMENSIONS>, MEASUREMENT_DIMENSIONS> calculate_measurement_noise_matrix(const std::vector<Measurement>& samples);
+
         pros::Imu imu;
         pros::Imu imu2;
 };
