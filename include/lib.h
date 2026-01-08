@@ -294,6 +294,9 @@ class OWDrivetrain { // one wheel tracker drivetrain
 
         std::vector<Measurement> sample_all_sensors(int num_samples, int delay_ms = 10);
         std::array<std::array<float, MEASUREMENT_DIMENSIONS>, MEASUREMENT_DIMENSIONS> calculate_measurement_noise_matrix(const std::vector<Measurement>& samples);
+        
+        // Enhanced localization system for UKF integration
+        void update_position_localization();
 
         pros::Imu imu;
         pros::Imu imu2;

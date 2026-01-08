@@ -8,6 +8,8 @@
 // ------------------------LIDAR------------------------------------------------------------------------ 
 // Constants for LiDAR localization
 const float FIELD_SIZE = 3658.0f; // 12 feet in mm
+const float FIELD_WIDTH = 3658.0f; // 12 feet in mm
+const float FIELD_HEIGHT = 3658.0f; // 12 feet in mm
 const float MAX_LIDAR_RANGE = 2000.0f;
 const float ASSOCIATION_THRESHOLD = 300.0f; // mm
 const float MIN_ANGLE_COS = 0.17f; // ~80 degrees, avoid grazing angles
@@ -206,7 +208,7 @@ float PID::compute(float error) {
         return 0;
     }
 
-    this->integral += error; // integral
+    this->integral += error * this->dt / 1000.0f; // integral (convert ms to seconds)
 
     // when error reaches 0, set integral to 0
     if (fabs(this->integral) < this->settle_error) {
@@ -219,7 +221,7 @@ float PID::compute(float error) {
     }
 
     // rate of change of error
-    float derivative = error - this->prev_error;
+    float derivative = (error - this->prev_error) / (this->dt / 1000.0f);
     this->prev_error = error;
 
     float output = this->kP*error + this->kI*this->integral + this->kD*derivative;
@@ -242,6 +244,8 @@ bool PID::get_settled(float error) {
 void PID::reset() {
     this->time_settled = 0;
     this->time_spent = 0;
+    this->integral = 0;
+    this->prev_error = 0;
 }
 
 Drivetrain::Drivetrain(std::vector<std::int8_t> left_motor_ports, std::vector<std::int8_t> right_motor_ports, PID linear_pid, PID turn_pid, int motor_speed, int imu_port, int left_tracker_port, int right_tracker_port, int back_tracker_port, float track_width, float left_tracker_offset, float right_tracker_offset, float back_tracker_offset):
@@ -401,7 +405,6 @@ PurePursuit::PurePursuit(std::vector<Point> path, float lookahead_distance, floa
 };
 
 std::vector<Point> PurePursuit::get_intersection(Point current_pos, Point pt1, Point pt2, double lookahead_radius) {
-    std::vector<Point> line = get_line();
 
     float x2 = pt2.x - current_pos.x;
     float x1 = pt1.x - current_pos.x;
@@ -437,7 +440,7 @@ std::vector<Point> PurePursuit::get_intersection(Point current_pos, Point pt1, P
             intersection_list.push_back({poi_x2, poi_y2});
         }
 
-        return {{poi_x1, poi_y1}, {poi_x2, poi_y2}};
+        return intersection_list;
     } else if (discriminant == 0) {
         if (poi_x1 >= std::min(x1, x2) && poi_x1 <= std::max(x1, x2) && poi_y1 >= std::min(y1, y2) && poi_y1 <= std::max(y1, y2)) {
             // POI is within bounds, POI 1 = POI 2
@@ -455,14 +458,14 @@ std::vector<Point> PurePursuit::get_line() {
 }
 
 Point PurePursuit::set_goal_point(Point current_pos) {
-    std::vector<Point> intersections = get_intersection(current_pos, waypoints[waypoint_index-1], waypoints[waypoint_index], 1);
+    std::vector<Point> intersections = get_intersection(current_pos, waypoints[waypoint_index-1], waypoints[waypoint_index], lookahead_distance);
     int size = intersections.size();
 
     if (size == 2) {
         if (distance(intersections[0], waypoints[waypoint_index]) < distance(intersections[1], waypoints[waypoint_index])) {
             // closer to waypoint
             if (distance(current_pos, waypoints[waypoint_index]) < distance(intersections[0], waypoints[waypoint_index])) {
-                if (!(waypoint_index >= waypoints.size())) {
+                if (waypoint_index < waypoints.size() - 1) {
                     waypoint_index++;
                 }
             } else {
@@ -470,7 +473,7 @@ Point PurePursuit::set_goal_point(Point current_pos) {
             }
         } else {
             if (distance(current_pos, waypoints[waypoint_index]) < distance(intersections[1], waypoints[waypoint_index])) {
-                if (!(waypoint_index >= waypoints.size())) {
+                if (waypoint_index < waypoints.size() - 1) {
                     waypoint_index++;
                 }
             } else {
@@ -511,7 +514,12 @@ std::vector<float> PurePursuit::compute_errors(Pose current_pose) {
     float dy = goal_point.y - current_pose.y;
 
     float linear_error = distance(goal_point, {current_pose.x, current_pose.y});
-    float turn_error = atan2(dy,dx); // represents angle between heading vector & look-ahead vector
+    float target_angle = atan2(dy, dx);
+    float turn_error = target_angle - current_pose.heading; // heading error
+    
+    // Normalize angle to [-π, π]
+    while (turn_error > M_PI) turn_error -= 2.0 * M_PI;
+    while (turn_error < -M_PI) turn_error += 2.0 * M_PI;
     // float curvature = 2*dx/pow(lookahead_distance, 2);
     return {linear_error, turn_error};
 }
@@ -670,18 +678,56 @@ Point OWDrivetrain::dist_est_pos() {
 }
 
 Point OWDrivetrain::tracker_est_pos() {
-    /*
-    */
-
     left_pos = left_tracker.get_position();
-
     float distance = left_pos - prev_left_pos;
-
     prev_left_pos = left_pos;
-
     float convert_heading = -heading;
-
     return {drive_y + cos(convert_heading)*distance, drive_y + sin(convert_heading)*distance};
+}
+
+Point OWDrivetrain::get_position() {
+    return {drive_x, drive_y};
+}
+
+State OWDrivetrain::get_state() {
+    State state;
+    state.x = drive_x;
+    state.y = drive_y;
+    state.heading = heading * M_PI / 180.0f; // Convert to radians
+    state.lv = 0; // Linear velocity - would need to be calculated
+    state.av = 0; // Angular velocity - would need to be calculated  
+    state.imu_bias = 0;
+    state.encoder_bias = 0;
+    return state;
+}
+
+Pose OWDrivetrain::get_pose() {
+    return {drive_x, drive_y, heading};
+}
+
+void OWDrivetrain::reset_position() {
+    drive_x = 0;
+    drive_y = 0;
+    heading = 0;
+    prev_drive_x = 0;
+    prev_drive_y = 0;
+    left_tracker.set_position(0);
+    prev_left_pos = 0;
+}
+
+void OWDrivetrain::start_odom() {
+    if (odom_task != nullptr) {
+        delete(odom_task);
+    }
+    odom_task = new pros::Task(odom_wrapper, this);
+}
+
+void OWDrivetrain::odom_wrapper(void *param) {
+    OWDrivetrain* drive = static_cast<OWDrivetrain*>(param);
+    while (true) {
+        drive->update_position_localization(); // Use the enhanced localization
+        pros::delay(10);
+    }
 }
 
 void OWDrivetrain::move(double left_voltage, double right_voltage) {
@@ -919,6 +965,218 @@ std::array<std::array<float, MEASUREMENT_DIMENSIONS>, MEASUREMENT_DIMENSIONS> OW
     return noise_matrix;
 }
 
+void OWDrivetrain::update_position_localization() {
+    // ========================================
+    // STEP 1: IMU Fusion for Heading
+    // ========================================
+    float imu1_heading = min_angle(imu.get_heading());
+    float imu2_heading = min_angle(imu2.get_heading());
+    
+    bool imu1_valid = !std::isnan(imu1_heading) && std::isfinite(imu1_heading);
+    bool imu2_valid = !std::isnan(imu2_heading) && std::isfinite(imu2_heading);
+    
+    float current_heading = heading; // Default to previous
+    if (imu1_valid && imu2_valid) {
+        current_heading = (imu1_heading + imu2_heading) / 2.0f;
+    } else if (imu1_valid) {
+        current_heading = imu1_heading;
+    } else if (imu2_valid) {
+        current_heading = imu2_heading;
+    }
+    
+    float theta_rad = current_heading * M_PI / 180.0f; // Convert to radians
+    
+    // ========================================
+    // STEP 2: Dead Reckoning with Tracking Wheel
+    // ========================================
+    float current_tracker_pos = left_tracker.get_position();
+    float tracker_delta = current_tracker_pos - prev_left_pos;
+    prev_left_pos = current_tracker_pos;
+    
+    // Convert encoder ticks to distance (adjust wheel_diameter and conversion as needed)
+    float distance_traveled = tracker_delta * wheel_diameter * M_PI / 360.0f;
+    
+    // Tracking wheel measures perpendicular movement (vertical/strafe)
+    // Assuming tracking wheel is perpendicular to robot front
+    float dead_reckon_dx = distance_traveled * sin(theta_rad);
+    float dead_reckon_dy = distance_traveled * cos(theta_rad);
+    
+    // Dead reckoning position estimate
+    Point dead_reckon_pos = {drive_x + dead_reckon_dx, drive_y + dead_reckon_dy};
+    
+    // ========================================
+    // STEP 3: Distance Sensor Localization
+    // ========================================
+    
+    // Sensor offsets from robot center (in robot frame)
+    // Adjust these based on your actual sensor mounting positions
+    const float SENSOR_OFFSET_FRONT_X = 0.0f;    // Front sensor offset
+    const float SENSOR_OFFSET_FRONT_Y = 150.0f;  // mm forward from center
+    const float SENSOR_OFFSET_BACK_X = 0.0f;     // Back sensor offset  
+    const float SENSOR_OFFSET_BACK_Y = -150.0f;  // mm backward from center
+    const float SENSOR_OFFSET_LEFT_X = -150.0f;  // Left sensor offset
+    const float SENSOR_OFFSET_LEFT_Y = 0.0f;     // mm left from center
+    const float SENSOR_OFFSET_RIGHT_X = 150.0f;  // Right sensor offset
+    const float SENSOR_OFFSET_RIGHT_Y = 0.0f;    // mm right from center
+    
+    // Get distance readings
+    float front_reading = front_dist.get();
+    float back_reading = back_dist.get();
+    float left_reading = left_dist.get();
+    float right_reading = right_dist.get();
+    
+    // Validate readings (within sensor range)
+    bool front_valid = front_reading > 10.0f && front_reading < MAX_LIDAR_RANGE;
+    bool back_valid = back_reading > 10.0f && back_reading < MAX_LIDAR_RANGE;
+    bool left_valid = left_reading > 10.0f && left_reading < MAX_LIDAR_RANGE;
+    bool right_valid = right_reading > 10.0f && right_reading < MAX_LIDAR_RANGE;
+    
+    // Storage for position estimates from each sensor
+    std::vector<float> x_estimates, y_estimates;
+    std::vector<float> x_weights, y_weights;
+    
+    float cos_theta = cos(theta_rad);
+    float sin_theta = sin(theta_rad);
+    
+    // Front sensor (+Y wall constraint)
+    if (front_valid) {
+        // Rotate sensor offset into field frame
+        float offset_field_x = SENSOR_OFFSET_FRONT_X * cos_theta - SENSOR_OFFSET_FRONT_Y * sin_theta;
+        float offset_field_y = SENSOR_OFFSET_FRONT_X * sin_theta + SENSOR_OFFSET_FRONT_Y * cos_theta;
+        
+        // Convert wall distance to robot center position
+        float estimated_y = FIELD_HEIGHT - front_reading - offset_field_y;
+        
+        y_estimates.push_back(estimated_y);
+        y_weights.push_back(1.0f - front_reading / MAX_LIDAR_RANGE); // Higher weight for closer readings
+    }
+    
+    // Back sensor (-Y wall constraint)  
+    if (back_valid) {
+        float offset_field_x = SENSOR_OFFSET_BACK_X * cos_theta - SENSOR_OFFSET_BACK_Y * sin_theta;
+        float offset_field_y = SENSOR_OFFSET_BACK_X * sin_theta + SENSOR_OFFSET_BACK_Y * cos_theta;
+        
+        float estimated_y = back_reading - offset_field_y;
+        
+        y_estimates.push_back(estimated_y);
+        y_weights.push_back(1.0f - back_reading / MAX_LIDAR_RANGE);
+    }
+    
+    // Left sensor (-X wall constraint)
+    if (left_valid) {
+        float offset_field_x = SENSOR_OFFSET_LEFT_X * cos_theta - SENSOR_OFFSET_LEFT_Y * sin_theta;
+        float offset_field_y = SENSOR_OFFSET_LEFT_X * sin_theta + SENSOR_OFFSET_LEFT_Y * cos_theta;
+        
+        float estimated_x = left_reading - offset_field_x;
+        
+        x_estimates.push_back(estimated_x);
+        x_weights.push_back(1.0f - left_reading / MAX_LIDAR_RANGE);
+    }
+    
+    // Right sensor (+X wall constraint)
+    if (right_valid) {
+        float offset_field_x = SENSOR_OFFSET_RIGHT_X * cos_theta - SENSOR_OFFSET_RIGHT_Y * sin_theta;
+        float offset_field_y = SENSOR_OFFSET_RIGHT_X * sin_theta + SENSOR_OFFSET_RIGHT_Y * cos_theta;
+        
+        float estimated_x = FIELD_WIDTH - right_reading - offset_field_x;
+        
+        x_estimates.push_back(estimated_x);
+        x_weights.push_back(1.0f - right_reading / MAX_LIDAR_RANGE);
+    }
+    
+    // ========================================
+    // STEP 4: Weighted Average for Distance-Based Position
+    // ========================================
+    Point distance_pos = {drive_x, drive_y}; // Default to current position
+    
+    // Compute weighted average for X position
+    if (!x_estimates.empty()) {
+        float weighted_sum_x = 0, total_weight_x = 0;
+        for (size_t i = 0; i < x_estimates.size(); i++) {
+            weighted_sum_x += x_estimates[i] * x_weights[i];
+            total_weight_x += x_weights[i];
+        }
+        if (total_weight_x > 0) {
+            distance_pos.x = weighted_sum_x / total_weight_x;
+        }
+    }
+    
+    // Compute weighted average for Y position  
+    if (!y_estimates.empty()) {
+        float weighted_sum_y = 0, total_weight_y = 0;
+        for (size_t i = 0; i < y_estimates.size(); i++) {
+            weighted_sum_y += y_estimates[i] * y_weights[i];
+            total_weight_y += y_weights[i];
+        }
+        if (total_weight_y > 0) {
+            distance_pos.y = weighted_sum_y / total_weight_y;
+        }
+    }
+    
+    // ========================================
+    // STEP 5: Sensor Fusion (Dead Reckoning + Distance Sensors)
+    // ========================================
+    bool dead_reckon_valid = !std::isnan(dead_reckon_pos.x) && !std::isnan(dead_reckon_pos.y) &&
+                             std::isfinite(dead_reckon_pos.x) && std::isfinite(dead_reckon_pos.y);
+    
+    bool distance_valid = !x_estimates.empty() || !y_estimates.empty();
+    
+    if (dead_reckon_valid && distance_valid) {
+        // Calculate disagreement between methods
+        float position_diff = sqrt(pow(dead_reckon_pos.x - distance_pos.x, 2) + 
+                                   pow(dead_reckon_pos.y - distance_pos.y, 2));
+        
+        // Dynamic weighting based on number of valid sensors and agreement
+        int num_valid_sensors = (front_valid ? 1 : 0) + (back_valid ? 1 : 0) + 
+                                (left_valid ? 1 : 0) + (right_valid ? 1 : 0);
+        
+        float distance_weight, dead_reckon_weight;
+        
+        if (num_valid_sensors >= 3 && position_diff < 100.0f) {
+            // High confidence: multiple sensors agree
+            distance_weight = 0.8f;
+            dead_reckon_weight = 0.2f;
+        } else if (num_valid_sensors >= 2 && position_diff < 200.0f) {
+            // Medium confidence
+            distance_weight = 0.6f;
+            dead_reckon_weight = 0.4f;
+        } else if (num_valid_sensors >= 1 && position_diff < 400.0f) {
+            // Lower confidence
+            distance_weight = 0.4f;
+            dead_reckon_weight = 0.6f;
+        } else {
+            // Poor sensor data or large disagreement - trust dead reckoning
+            distance_weight = 0.1f;
+            dead_reckon_weight = 0.9f;
+        }
+        
+        // Fused position estimate
+        drive_x = distance_weight * distance_pos.x + dead_reckon_weight * dead_reckon_pos.x;
+        drive_y = distance_weight * distance_pos.y + dead_reckon_weight * dead_reckon_pos.y;
+        
+    } else if (dead_reckon_valid) {
+        // Only dead reckoning available
+        drive_x = dead_reckon_pos.x;
+        drive_y = dead_reckon_pos.y;
+    } else if (distance_valid) {
+        // Only distance sensors available
+        drive_x = distance_pos.x;
+        drive_y = distance_pos.y;
+    }
+    // Else keep previous position
+    
+    // Update heading
+    heading = current_heading;
+    
+    // Apply field boundary constraints
+    drive_x = std::max(0.0f, std::min(FIELD_WIDTH, drive_x));
+    drive_y = std::max(0.0f, std::min(FIELD_HEIGHT, drive_y));
+    
+    // Store for next iteration
+    prev_drive_x = drive_x;
+    prev_drive_y = drive_y;
+}
+
 UKF::UKF(OWDrivetrain& drivetrain, State state, State mean, State sd, std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> p_noise, std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> m_noise, float alpha, float beta, float kappa, std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> se_cov):
     drivetrain(drivetrain),
     current(state),
@@ -956,6 +1214,11 @@ State UKF::get_estimate() {
     return current;
 }
 
+void UKF::set_num_sigma_points() {
+    // Number of sigma points is already defined as 2n+1 where n is STATE_DIMENSIONS
+    num_states = 2*STATE_DIMENSIONS+1;
+}
+
 State& State::operator+=(const State& rhs) {
     this->x += rhs.x;
     this->y += rhs.y;
@@ -991,16 +1254,16 @@ std::array<float, STATE_DIMENSIONS> UKF::col_sqrt(std::array<float, STATE_DIMENS
     return result;
 }
 
-State list_to_state(std::array<float, STATE_DIMENSIONS> col) {
-    return {
-        x: col[0],
-        y: col[1],
-        heading: col[2],
-        lv: col[3],
-        av: col[4],
-        imu_bias: col[5],
-        encoder_bias: col[6]
-    };
+State UKF::list_to_state(std::array<float, STATE_DIMENSIONS> col) {
+    State result;
+    result.x = col[0];
+    result.y = col[1];
+    result.heading = col[2];
+    result.lv = col[3];
+    result.av = col[4];
+    result.imu_bias = col[5];
+    result.encoder_bias = col[6];
+    return result;
 }
 
 void UKF::set_sigma_points() {
