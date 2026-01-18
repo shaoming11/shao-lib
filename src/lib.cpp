@@ -7,11 +7,11 @@
 
 // ------------------------LIDAR------------------------------------------------------------------------ 
 // Constants for LiDAR localization
-const float FIELD_SIZE = 3658.0f; // 12 feet in mm
-const float FIELD_WIDTH = 3658.0f; // 12 feet in mm
-const float FIELD_HEIGHT = 3658.0f; // 12 feet in mm
-const float MAX_LIDAR_RANGE = 2000.0f;
-const float ASSOCIATION_THRESHOLD = 300.0f; // mm
+const float FIELD_SIZE = 144.0f; // 12 feet in inches
+const float FIELD_WIDTH = 144.0f; // 12 feet in inches
+const float FIELD_HEIGHT = 144.0f; // 12 feet in inches
+const float MAX_LIDAR_RANGE = 78.74f; // ~2000mm in inches
+const float ASSOCIATION_THRESHOLD = 11.81f; // ~300mm in inches
 const float MIN_ANGLE_COS = 0.17f; // ~80 degrees, avoid grazing angles
 const float PI = 3.14159265359f;
 
@@ -43,6 +43,13 @@ struct LidarConfig {
 float normalize_angle(float angle) {
     while (angle < 0) angle += 2.0f * PI;
     while (angle >= 2.0f * PI) angle -= 2.0f * PI;
+    return angle;
+}
+
+// Normalize angle to [-PI, PI] for UKF (better for differences)
+float normalize_angle_symmetric(float angle) {
+    while (angle > PI) angle -= 2.0f * PI;
+    while (angle < -PI) angle += 2.0f * PI;
     return angle;
 }
 
@@ -531,7 +538,7 @@ bool PurePursuit::get_settled(Point current_pos) {
     return false;
 }
 
-OWDrivetrain::OWDrivetrain(std::vector<std::int8_t> left_motor_ports, std::vector<std::int8_t> right_motor_ports, PID linear_pid, PID turn_pid, int motor_speed, int imu_port, int imu2_port, int left_tracker_port, float track_width, float left_tracker_offset, int left_dist_port, int right_dist_port, int front_dist_port, int back_dist_port):
+OWDrivetrain::OWDrivetrain(std::vector<std::int8_t> left_motor_ports, std::vector<std::int8_t> right_motor_ports, PID linear_pid, PID turn_pid, int motor_speed, int imu_port, int imu2_port, pros::Rotation* left_tracker_ptr, float track_width, float left_tracker_offset, pros::Distance* left_dist_ptr, pros::Distance* right_dist_ptr, pros::Distance* front_dist_ptr, pros::Distance* back_dist_ptr, UKF* ukf_instance, float front_x_offset, float front_y_offset, float back_x_offset, float back_y_offset, float left_x_offset, float left_y_offset, float right_x_offset, float right_y_offset):
     left_motors(left_motor_ports),
     right_motors(right_motor_ports),
     linear_pid(linear_pid),
@@ -539,26 +546,35 @@ OWDrivetrain::OWDrivetrain(std::vector<std::int8_t> left_motor_ports, std::vecto
     motor_speed(motor_speed),
     imu(imu_port),
     imu2(imu2_port),
-    left_tracker(left_tracker_port),
+    left_tracker(left_tracker_ptr),
     track_width(track_width),
     left_tracker_offset(left_tracker_offset),
-    left_dist(left_dist_port),
-    right_dist(right_dist_port),
-    front_dist(front_dist_port),
-    back_dist(back_dist_port)
+    sensor_offset_front_x(front_x_offset),
+    sensor_offset_front_y(front_y_offset),
+    sensor_offset_back_x(back_x_offset),
+    sensor_offset_back_y(back_y_offset),
+    sensor_offset_left_x(left_x_offset),
+    sensor_offset_left_y(left_y_offset),
+    sensor_offset_right_x(right_x_offset),
+    sensor_offset_right_y(right_y_offset),
+    left_dist(left_dist_ptr),
+    right_dist(right_dist_ptr),
+    front_dist(front_dist_ptr),
+    back_dist(back_dist_ptr)
 {
-
+    // Store the UKF instance
+    ukf = ukf_instance;
 };
 
 Point OWDrivetrain::dist_est_pos() {
     // Define LiDAR configurations with physical offsets (you'll need to set these values)
     const float FRONT_OFFSET_X = 0.0f;   // Set actual front LiDAR X offset 
-    const float FRONT_OFFSET_Y = 100.0f; // Set actual front LiDAR Y offset
-    const float RIGHT_OFFSET_X = 100.0f; // Set actual right LiDAR X offset  
+    const float FRONT_OFFSET_Y = 3.94f; // Set actual front LiDAR Y offset (~100mm)
+    const float RIGHT_OFFSET_X = 3.94f; // Set actual right LiDAR X offset (~100mm)  
     const float RIGHT_OFFSET_Y = 0.0f;   // Set actual right LiDAR Y offset
     const float BACK_OFFSET_X = 0.0f;    // Set actual back LiDAR X offset
-    const float BACK_OFFSET_Y = -100.0f; // Set actual back LiDAR Y offset
-    const float LEFT_OFFSET_X = -100.0f; // Set actual left LiDAR X offset
+    const float BACK_OFFSET_Y = -3.94f; // Set actual back LiDAR Y offset (~-100mm)
+    const float LEFT_OFFSET_X = -3.94f; // Set actual left LiDAR X offset (~-100mm)
     const float LEFT_OFFSET_Y = 0.0f;    // Set actual left LiDAR Y offset
     
     LidarConfig front_config = {FRONT_OFFSET_X, FRONT_OFFSET_Y, 0.0f};           // 0° (forward)
@@ -571,11 +587,12 @@ Point OWDrivetrain::dist_est_pos() {
     float y_est = drive_y;
     float theta_est = heading * PI / 180.0f; // Convert degrees to radians
     
-    // Collect LiDAR samples
-    float l = left_dist.get();   // Left LiDAR distance in mm
-    float r = right_dist.get();  // Right LiDAR distance in mm
-    float f = front_dist.get();  // Front LiDAR distance in mm
-    float b = back_dist.get();   // Back LiDAR distance in mm
+    // Collect LiDAR samples and convert to inches
+    const float MM_TO_INCHES = 1.0f / 25.4f;
+    float l = left_dist->get() * MM_TO_INCHES;   // Left LiDAR distance in inches
+    float r = right_dist->get() * MM_TO_INCHES;  // Right LiDAR distance in inches
+    float f = front_dist->get() * MM_TO_INCHES;  // Front LiDAR distance in inches
+    float b = back_dist->get() * MM_TO_INCHES;   // Back LiDAR distance in inches
     
     // Associate each measurement with a wall
     WallMeasurement front_meas = associate_measurement(f, x_est, y_est, theta_est, front_config);
@@ -678,16 +695,17 @@ Point OWDrivetrain::dist_est_pos() {
 }
 
 Point OWDrivetrain::tracker_est_pos() {
-    left_pos = left_tracker.get_position();
+    left_pos = left_tracker->get_position();
     float distance = left_pos - prev_left_pos;
     prev_left_pos = left_pos;
     float convert_heading = -heading;
-    return {drive_y + cos(convert_heading)*distance, drive_y + sin(convert_heading)*distance};
+    return {static_cast<float>(drive_y + cos(convert_heading)*distance), static_cast<float>(drive_y + sin(convert_heading)*distance)};
 }
 
 Point OWDrivetrain::get_position() {
     return {drive_x, drive_y};
 }
+
 
 State OWDrivetrain::get_state() {
     State state;
@@ -711,7 +729,7 @@ void OWDrivetrain::reset_position() {
     heading = 0;
     prev_drive_x = 0;
     prev_drive_y = 0;
-    left_tracker.set_position(0);
+    left_tracker->set_position(0);
     prev_left_pos = 0;
 }
 
@@ -726,6 +744,33 @@ void OWDrivetrain::odom_wrapper(void *param) {
     OWDrivetrain* drive = static_cast<OWDrivetrain*>(param);
     while (true) {
         drive->update_position_localization(); // Use the enhanced localization
+        
+        // Run UKF if it's initialized
+        if (drive->ukf != nullptr) {
+            // Get actual motor voltages from motor groups
+            double left_voltage = drive->left_motors.get_voltage();
+            double right_voltage = drive->right_motors.get_voltage();
+            double dt = 0.01; // 10ms
+            
+            // STEP 1: PREDICT (every cycle, fixed dt)
+            // Use encoders + IMU (and motion model) to propagate state forward
+            drive->ukf->predict(left_voltage, right_voltage, dt);
+            
+            // STEP 2: BUILD POSE OBSERVATION (only if valid this cycle)
+            bool has_valid_observation = drive->update_position_localization_for_ukf();
+            
+            // STEP 3: CORRECT (immediately after building valid observation)
+            if (has_valid_observation) {
+                drive->ukf->correct();
+            }
+            
+            // Use UKF estimate to influence position
+            State ukf_estimate = drive->ukf->get_estimate();
+            drive->drive_x = ukf_estimate.x;
+            drive->drive_y = ukf_estimate.y;
+            drive->heading = ukf_estimate.heading * 180.0f / M_PI; // Convert back to degrees
+        }
+        
         pros::delay(10);
     }
 }
@@ -745,69 +790,36 @@ void OWDrivetrain::test_lidar_display() {
     
     // Get current pose estimate
     Point current_pos = {drive_x, drive_y};
-    Point lidar_pos = dist_est_pos();
-    Point tracker_pos = tracker_est_pos();
     
-    // Get raw sensor readings
-    float l = left_dist.get();
-    float r = right_dist.get(); 
-    float f = front_dist.get();
-    float b = back_dist.get();
+    // Safely get raw sensor readings with error checking
+    const float MM_TO_INCHES = 1.0f / 25.4f;
+    float l = -1, r = -1, f = -1, b = -1;
+    
+    try {
+        // Get distance sensor readings with bounds checking
+        int32_t left_raw = left_dist->get();
+        int32_t right_raw = right_dist->get();
+        int32_t front_raw = front_dist->get();
+        int32_t back_raw = back_dist->get();
+        
+        // Convert to inches only if readings are valid (positive and reasonable)
+        if (left_raw > 0 && left_raw < 4000) l = left_raw * MM_TO_INCHES;
+        if (right_raw > 0 && right_raw < 4000) r = right_raw * MM_TO_INCHES;
+        if (front_raw > 0 && front_raw < 4000) f = front_raw * MM_TO_INCHES;
+        if (back_raw > 0 && back_raw < 4000) b = back_raw * MM_TO_INCHES;
+        
+    } catch (...) {
+        // If any sensor call fails, display error
+        pros::lcd::print(0, "=== SENSOR ERROR ===");
+        pros::lcd::print(1, "Distance sensor fault");
+        return;
+    }
     
     // Display current robot state
     pros::lcd::print(0, "=== LiDAR Debug ===");
     pros::lcd::print(1, "Current: X=%.1f Y=%.1f H=%.1f", current_pos.x, current_pos.y, heading);
-    pros::lcd::print(2, "LiDAR:   X=%.1f Y=%.1f", lidar_pos.x, lidar_pos.y);
-    pros::lcd::print(3, "Tracker: X=%.1f Y=%.1f", tracker_pos.x, tracker_pos.y);
     pros::lcd::print(4, "Distances: L=%.0f R=%.0f", l, r);
     pros::lcd::print(5, "           F=%.0f B=%.0f", f, b);
-    
-    // Calculate differences
-    float lidar_error_x = lidar_pos.x - current_pos.x;
-    float lidar_error_y = lidar_pos.y - current_pos.y;
-    float tracker_error_x = tracker_pos.x - current_pos.x;
-    float tracker_error_y = tracker_pos.y - current_pos.y;
-    
-    pros::lcd::print(6, "LiDAR Err: X=%.1f Y=%.1f", lidar_error_x, lidar_error_y);
-    pros::lcd::print(7, "Track Err: X=%.1f Y=%.1f", tracker_error_x, tracker_error_y);
-}
-
-void OWDrivetrain::update_position() {
-    heading = (min_angle(imu.get_heading()) + min_angle(imu2.get_heading()))/2;
-
-    Point dist = dist_est_pos();
-    Point tracker = tracker_est_pos();
-    
-    // Validate distance sensor position
-    bool dist_valid = (dist.x != 0 || dist.y != 0) && 
-                      !std::isnan(dist.x) && !std::isnan(dist.y) && 
-                      std::isfinite(dist.x) && std::isfinite(dist.y);
-    
-    // Validate tracker position  
-    bool tracker_valid = !std::isnan(tracker.x) && !std::isnan(tracker.y) && 
-                         std::isfinite(tracker.x) && std::isfinite(tracker.y);
-    
-    // Sensor fusion with fallbacks
-    if (dist_valid && tracker_valid) {
-        // Both valid - use weighted average
-        drive_x = 0.8*dist.x + 0.2*tracker.x;
-        drive_y = 0.8*dist.y + 0.2*tracker.y;
-    } else if (tracker_valid) {
-        // Only tracker valid
-        drive_x = tracker.x;
-        drive_y = tracker.y;
-    } else if (dist_valid) {
-        // Only distance valid
-        drive_x = dist.x;
-        drive_y = dist.y;
-    } else {
-        // Neither valid - keep previous position
-        drive_x = prev_drive_x;
-        drive_y = prev_drive_y;
-    }
-
-    prev_drive_x = drive_x;
-    prev_drive_y = drive_y;
 }
 
 void OWDrivetrain::move_to_point(Point target) {
@@ -864,19 +876,20 @@ void OWDrivetrain::turn_wrapper(void *param) {
 }
 
 Measurement OWDrivetrain::get_measurement(State input) {
-    /* from input predicted state estimate, 
-    apply measurement model to get measurement for each sigma point. 
-    This function maps the state space to measurement space.
+    /* Get ACTUAL sensor readings from hardware
+    Note: The 'input' parameter is ignored - this function reads real sensor values
+    For PREDICTED measurements from state estimates, use predict_measurement_from_state()
     */
     
     Measurement measurement;
     
-    // Get current sensor readings
-    measurement.l = left_dist.get();    // Left distance sensor
-    measurement.r = right_dist.get();   // Right distance sensor  
-    measurement.f = front_dist.get();   // Front distance sensor
-    measurement.b = back_dist.get();    // Back distance sensor
-    measurement.rotation = left_tracker.get_position(); // Rotation encoder
+    // Get current sensor readings and convert to inches
+    const float MM_TO_INCHES = 1.0f / 25.4f;
+    measurement.l = left_dist->get() * MM_TO_INCHES;    // Left distance sensor
+    measurement.r = right_dist->get() * MM_TO_INCHES;   // Right distance sensor  
+    measurement.f = front_dist->get() * MM_TO_INCHES;   // Front distance sensor
+    measurement.b = back_dist->get() * MM_TO_INCHES;    // Back distance sensor
+    measurement.rotation = left_tracker->get_position(); // Rotation encoder
     measurement.heading = heading;      // IMU heading
     
     return measurement;
@@ -889,11 +902,12 @@ std::vector<Measurement> OWDrivetrain::sample_all_sensors(int num_samples, int d
     for (int i = 0; i < num_samples; i++) {
         Measurement sample;
         
-        sample.l = left_dist.get();
-        sample.r = right_dist.get();
-        sample.f = front_dist.get();
-        sample.b = back_dist.get();
-        sample.rotation = left_tracker.get_position();
+        const float MM_TO_INCHES = 1.0f / 25.4f;
+        sample.l = left_dist->get() * MM_TO_INCHES;
+        sample.r = right_dist->get() * MM_TO_INCHES;
+        sample.f = front_dist->get() * MM_TO_INCHES;
+        sample.b = back_dist->get() * MM_TO_INCHES;
+        sample.rotation = left_tracker->get_position();
         sample.heading = (min_angle(imu.get_heading()) + min_angle(imu2.get_heading())) / 2.0f;
         
         samples.push_back(sample);
@@ -989,11 +1003,11 @@ void OWDrivetrain::update_position_localization() {
     // ========================================
     // STEP 2: Dead Reckoning with Tracking Wheel
     // ========================================
-    float current_tracker_pos = left_tracker.get_position();
+    float current_tracker_pos = left_tracker->get_position();
     float tracker_delta = current_tracker_pos - prev_left_pos;
     prev_left_pos = current_tracker_pos;
     
-    // Convert encoder ticks to distance (adjust wheel_diameter and conversion as needed)
+    // Convert encoder ticks to distance in inches (wheel_diameter is already in inches)
     float distance_traveled = tracker_delta * wheel_diameter * M_PI / 360.0f;
     
     // Tracking wheel measures perpendicular movement (vertical/strafe)
@@ -1008,28 +1022,26 @@ void OWDrivetrain::update_position_localization() {
     // STEP 3: Distance Sensor Localization
     // ========================================
     
-    // Sensor offsets from robot center (in robot frame)
-    // Adjust these based on your actual sensor mounting positions
-    const float SENSOR_OFFSET_FRONT_X = 0.0f;    // Front sensor offset
-    const float SENSOR_OFFSET_FRONT_Y = 150.0f;  // mm forward from center
-    const float SENSOR_OFFSET_BACK_X = 0.0f;     // Back sensor offset  
-    const float SENSOR_OFFSET_BACK_Y = -150.0f;  // mm backward from center
-    const float SENSOR_OFFSET_LEFT_X = -150.0f;  // Left sensor offset
-    const float SENSOR_OFFSET_LEFT_Y = 0.0f;     // mm left from center
-    const float SENSOR_OFFSET_RIGHT_X = 150.0f;  // Right sensor offset
-    const float SENSOR_OFFSET_RIGHT_Y = 0.0f;    // mm right from center
+    // Use configured sensor offsets from constructor
     
     // Get distance readings
-    float front_reading = front_dist.get();
-    float back_reading = back_dist.get();
-    float left_reading = left_dist.get();
-    float right_reading = right_dist.get();
+    float front_reading = front_dist->get();
+    float back_reading = back_dist->get();
+    float left_reading = left_dist->get();
+    float right_reading = right_dist->get();
+    
+    // Convert sensor readings from mm to inches
+    const float MM_TO_INCHES = 1.0f / 25.4f;
+    front_reading *= MM_TO_INCHES;
+    back_reading *= MM_TO_INCHES;
+    left_reading *= MM_TO_INCHES;
+    right_reading *= MM_TO_INCHES;
     
     // Validate readings (within sensor range)
-    bool front_valid = front_reading > 10.0f && front_reading < MAX_LIDAR_RANGE;
-    bool back_valid = back_reading > 10.0f && back_reading < MAX_LIDAR_RANGE;
-    bool left_valid = left_reading > 10.0f && left_reading < MAX_LIDAR_RANGE;
-    bool right_valid = right_reading > 10.0f && right_reading < MAX_LIDAR_RANGE;
+    bool front_valid = front_reading > 0.39f && front_reading < MAX_LIDAR_RANGE; // >10mm
+    bool back_valid = back_reading > 0.39f && back_reading < MAX_LIDAR_RANGE;
+    bool left_valid = left_reading > 0.39f && left_reading < MAX_LIDAR_RANGE;
+    bool right_valid = right_reading > 0.39f && right_reading < MAX_LIDAR_RANGE;
     
     // Storage for position estimates from each sensor
     std::vector<float> x_estimates, y_estimates;
@@ -1041,8 +1053,8 @@ void OWDrivetrain::update_position_localization() {
     // Front sensor (+Y wall constraint)
     if (front_valid) {
         // Rotate sensor offset into field frame
-        float offset_field_x = SENSOR_OFFSET_FRONT_X * cos_theta - SENSOR_OFFSET_FRONT_Y * sin_theta;
-        float offset_field_y = SENSOR_OFFSET_FRONT_X * sin_theta + SENSOR_OFFSET_FRONT_Y * cos_theta;
+        float offset_field_x = sensor_offset_front_x * cos_theta - sensor_offset_front_y * sin_theta;
+        float offset_field_y = sensor_offset_front_x * sin_theta + sensor_offset_front_y * cos_theta;
         
         // Convert wall distance to robot center position
         float estimated_y = FIELD_HEIGHT - front_reading - offset_field_y;
@@ -1053,8 +1065,8 @@ void OWDrivetrain::update_position_localization() {
     
     // Back sensor (-Y wall constraint)  
     if (back_valid) {
-        float offset_field_x = SENSOR_OFFSET_BACK_X * cos_theta - SENSOR_OFFSET_BACK_Y * sin_theta;
-        float offset_field_y = SENSOR_OFFSET_BACK_X * sin_theta + SENSOR_OFFSET_BACK_Y * cos_theta;
+        float offset_field_x = sensor_offset_back_x * cos_theta - sensor_offset_back_y * sin_theta;
+        float offset_field_y = sensor_offset_back_x * sin_theta + sensor_offset_back_y * cos_theta;
         
         float estimated_y = back_reading - offset_field_y;
         
@@ -1064,8 +1076,8 @@ void OWDrivetrain::update_position_localization() {
     
     // Left sensor (-X wall constraint)
     if (left_valid) {
-        float offset_field_x = SENSOR_OFFSET_LEFT_X * cos_theta - SENSOR_OFFSET_LEFT_Y * sin_theta;
-        float offset_field_y = SENSOR_OFFSET_LEFT_X * sin_theta + SENSOR_OFFSET_LEFT_Y * cos_theta;
+        float offset_field_x = sensor_offset_left_x * cos_theta - sensor_offset_left_y * sin_theta;
+        float offset_field_y = sensor_offset_left_x * sin_theta + sensor_offset_left_y * cos_theta;
         
         float estimated_x = left_reading - offset_field_x;
         
@@ -1075,8 +1087,8 @@ void OWDrivetrain::update_position_localization() {
     
     // Right sensor (+X wall constraint)
     if (right_valid) {
-        float offset_field_x = SENSOR_OFFSET_RIGHT_X * cos_theta - SENSOR_OFFSET_RIGHT_Y * sin_theta;
-        float offset_field_y = SENSOR_OFFSET_RIGHT_X * sin_theta + SENSOR_OFFSET_RIGHT_Y * cos_theta;
+        float offset_field_x = sensor_offset_right_x * cos_theta - sensor_offset_right_y * sin_theta;
+        float offset_field_y = sensor_offset_right_x * sin_theta + sensor_offset_right_y * cos_theta;
         
         float estimated_x = FIELD_WIDTH - right_reading - offset_field_x;
         
@@ -1132,15 +1144,15 @@ void OWDrivetrain::update_position_localization() {
         
         float distance_weight, dead_reckon_weight;
         
-        if (num_valid_sensors >= 3 && position_diff < 100.0f) {
+        if (num_valid_sensors >= 3 && position_diff < 3.94f) { // ~100mm in inches
             // High confidence: multiple sensors agree
             distance_weight = 0.8f;
             dead_reckon_weight = 0.2f;
-        } else if (num_valid_sensors >= 2 && position_diff < 200.0f) {
+        } else if (num_valid_sensors >= 2 && position_diff < 7.87f) { // ~200mm in inches
             // Medium confidence
             distance_weight = 0.6f;
             dead_reckon_weight = 0.4f;
-        } else if (num_valid_sensors >= 1 && position_diff < 400.0f) {
+        } else if (num_valid_sensors >= 1 && position_diff < 15.75f) { // ~400mm in inches
             // Lower confidence
             distance_weight = 0.4f;
             dead_reckon_weight = 0.6f;
@@ -1177,7 +1189,304 @@ void OWDrivetrain::update_position_localization() {
     prev_drive_y = drive_y;
 }
 
-UKF::UKF(OWDrivetrain& drivetrain, State state, State mean, State sd, std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> p_noise, std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> m_noise, float alpha, float beta, float kappa, std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> se_cov):
+bool OWDrivetrain::update_position_localization_for_ukf() {
+    // This method computes pose observation z = [x_meas, y_meas, theta_meas] and validates it
+    // Returns true if the observation is "valid enough" to trust for UKF correction
+    
+    // ========================================
+    // STEP 1: IMU Fusion for Heading
+    // ========================================
+    float imu1_heading = min_angle(imu.get_heading());
+    float imu2_heading = min_angle(imu2.get_heading());
+    
+    bool imu1_valid = !std::isnan(imu1_heading) && std::isfinite(imu1_heading);
+    bool imu2_valid = !std::isnan(imu2_heading) && std::isfinite(imu2_heading);
+    
+    // Must have at least one valid IMU for heading observation
+    if (!imu1_valid && !imu2_valid) {
+        return false; // No valid heading observation
+    }
+    
+    float observed_heading = heading; // Default to previous
+    if (imu1_valid && imu2_valid) {
+        observed_heading = (imu1_heading + imu2_heading) / 2.0f;
+    } else if (imu1_valid) {
+        observed_heading = imu1_heading;
+    } else if (imu2_valid) {
+        observed_heading = imu2_heading;
+    }
+    
+    float theta_rad = observed_heading * M_PI / 180.0f;
+    
+    // ========================================
+    // STEP 2: Distance Sensor Position Observation
+    // ========================================
+    
+    // Get distance readings and validate
+    float front_reading = front_dist->get();
+    float back_reading = back_dist->get();
+    float left_reading = left_dist->get();
+    float right_reading = right_dist->get();
+    
+    // Convert sensor readings from mm to inches
+    const float MM_TO_INCHES = 1.0f / 25.4f;
+    front_reading *= MM_TO_INCHES;
+    back_reading *= MM_TO_INCHES;
+    left_reading *= MM_TO_INCHES;
+    right_reading *= MM_TO_INCHES;
+    
+    // Validate readings (within sensor range)
+    bool front_valid = front_reading > 0.39f && front_reading < MAX_LIDAR_RANGE; // >10mm
+    bool back_valid = back_reading > 0.39f && back_reading < MAX_LIDAR_RANGE;
+    bool left_valid = left_reading > 0.39f && left_reading < MAX_LIDAR_RANGE;
+    bool right_valid = right_reading > 0.39f && right_reading < MAX_LIDAR_RANGE;
+    
+    int num_valid_sensors = (front_valid ? 1 : 0) + (back_valid ? 1 : 0) + 
+                           (left_valid ? 1 : 0) + (right_valid ? 1 : 0);
+    
+    // Need at least 2 valid distance sensors for reliable position observation
+    if (num_valid_sensors < 2) {
+        return false; // Not enough valid sensors for position observation
+    }
+    
+    // Storage for position estimates from each sensor
+    std::vector<float> x_estimates, y_estimates;
+    std::vector<float> x_weights, y_weights;
+    
+    float cos_theta = cos(theta_rad);
+    float sin_theta = sin(theta_rad);
+    
+    // Compute position estimates from each valid sensor
+    if (front_valid) {
+        float offset_field_x = sensor_offset_front_x * cos_theta - sensor_offset_front_y * sin_theta;
+        float offset_field_y = sensor_offset_front_x * sin_theta + sensor_offset_front_y * cos_theta;
+        float estimated_y = FIELD_HEIGHT - front_reading - offset_field_y;
+        
+        y_estimates.push_back(estimated_y);
+        y_weights.push_back(1.0f - front_reading / MAX_LIDAR_RANGE);
+    }
+    
+    if (back_valid) {
+        float offset_field_x = sensor_offset_back_x * cos_theta - sensor_offset_back_y * sin_theta;
+        float offset_field_y = sensor_offset_back_x * sin_theta + sensor_offset_back_y * cos_theta;
+        float estimated_y = back_reading - offset_field_y;
+        
+        y_estimates.push_back(estimated_y);
+        y_weights.push_back(1.0f - back_reading / MAX_LIDAR_RANGE);
+    }
+    
+    if (left_valid) {
+        float offset_field_x = sensor_offset_left_x * cos_theta - sensor_offset_left_y * sin_theta;
+        float offset_field_y = sensor_offset_left_x * sin_theta + sensor_offset_left_y * cos_theta;
+        float estimated_x = left_reading - offset_field_x;
+        
+        x_estimates.push_back(estimated_x);
+        x_weights.push_back(1.0f - left_reading / MAX_LIDAR_RANGE);
+    }
+    
+    if (right_valid) {
+        float offset_field_x = sensor_offset_right_x * cos_theta - sensor_offset_right_y * sin_theta;
+        float offset_field_y = sensor_offset_right_x * sin_theta + sensor_offset_right_y * cos_theta;
+        float estimated_x = FIELD_WIDTH - right_reading - offset_field_x;
+        
+        x_estimates.push_back(estimated_x);
+        x_weights.push_back(1.0f - right_reading / MAX_LIDAR_RANGE);
+    }
+    
+    // ========================================
+    // STEP 3: Compute Weighted Average Position Observation
+    // ========================================
+    float observed_x = drive_x; // Default to current position
+    float observed_y = drive_y;
+    
+    // Compute weighted average for X position
+    if (!x_estimates.empty()) {
+        float weighted_sum_x = 0, total_weight_x = 0;
+        for (size_t i = 0; i < x_estimates.size(); i++) {
+            weighted_sum_x += x_estimates[i] * x_weights[i];
+            total_weight_x += x_weights[i];
+        }
+        if (total_weight_x > 0) {
+            observed_x = weighted_sum_x / total_weight_x;
+        }
+    }
+    
+    // Compute weighted average for Y position  
+    if (!y_estimates.empty()) {
+        float weighted_sum_y = 0, total_weight_y = 0;
+        for (size_t i = 0; i < y_estimates.size(); i++) {
+            weighted_sum_y += y_estimates[i] * y_weights[i];
+        }
+        if (total_weight_y > 0) {
+            observed_y = weighted_sum_y / total_weight_y;
+        }
+    }
+    
+    // ========================================
+    // STEP 4: Validate Observation Quality
+    // ========================================
+    
+    // Check if position observation is within field boundaries
+    if (observed_x < 0 || observed_x > FIELD_WIDTH || 
+        observed_y < 0 || observed_y > FIELD_HEIGHT) {
+        return false; // Position observation is outside valid field
+    }
+    
+    // Check for reasonable change from current estimate (detect outliers)
+    State current_estimate = ukf->get_estimate();
+    float position_change = sqrt(pow(observed_x - current_estimate.x, 2) + 
+                               pow(observed_y - current_estimate.y, 2));
+    
+    // Reject observations that imply unrealistic jumps (>2 feet in 10ms)
+    const float MAX_POSITION_JUMP = 24.0f; // inches
+    if (position_change > MAX_POSITION_JUMP) {
+        return false; // Observation implies unrealistic position change
+    }
+    
+    // Check angular change
+    float heading_change = fabs(observed_heading - current_estimate.heading * 180.0f / M_PI);
+    while (heading_change > 180.0f) heading_change -= 360.0f; // Normalize
+    while (heading_change < -180.0f) heading_change += 360.0f;
+    
+    // Reject observations that imply unrealistic angular jumps (>90 degrees in 10ms)
+    const float MAX_HEADING_JUMP = 90.0f; // degrees
+    if (fabs(heading_change) > MAX_HEADING_JUMP) {
+        return false; // Observation implies unrealistic heading change
+    }
+    
+    // ========================================
+    // STEP 5: Store Valid Observation for UKF Correction
+    // ========================================
+    
+    // Update the current position with the validated observation
+    // This will be used by get_measurement() during UKF correct() step
+    drive_x = observed_x;
+    drive_y = observed_y;
+    heading = observed_heading;
+    
+    return true; // Observation is valid and ready for UKF correction
+}
+
+Measurement OWDrivetrain::predict_measurement_from_state(const State& state) {
+    // Measurement model h(x): Given a state estimate, predict what sensors should read
+    // This is the mathematical function that maps state space to measurement space
+    
+    Measurement predicted;
+    
+    // Convert state heading from radians to match our coordinate system
+    float theta_rad = state.heading; // State heading is already in radians
+    float cos_theta = cos(theta_rad);
+    float sin_theta = sin(theta_rad);
+    
+    // ========================================
+    // PREDICT DISTANCE SENSOR READINGS
+    // ========================================
+    
+    // Front sensor prediction (+Y direction when robot faces north)
+    // Calculate sensor position in global frame
+    float front_sensor_global_x = state.x + sensor_offset_front_x * cos_theta - sensor_offset_front_y * sin_theta;
+    float front_sensor_global_y = state.y + sensor_offset_front_x * sin_theta + sensor_offset_front_y * cos_theta;
+    
+    // Calculate sensor orientation in global frame (front sensor points forward)
+    float front_sensor_angle = theta_rad; // Front sensor aligned with robot
+    
+    // Distance to north wall (y = FIELD_HEIGHT) along sensor direction
+    // Use safer threshold and check distance validity
+    if (fabs(cos(front_sensor_angle)) > MIN_ANGLE_COS) { // cos(80°) ≈ 0.17
+        float dist = (FIELD_HEIGHT - front_sensor_global_y) / cos(front_sensor_angle);
+        if (dist > 0 && dist < MAX_LIDAR_RANGE) {
+            predicted.f = dist;
+        } else {
+            predicted.f = MAX_LIDAR_RANGE;
+        }
+    } else {
+        predicted.f = MAX_LIDAR_RANGE; // Sensor not pointing toward wall
+    }
+    
+    // Back sensor prediction (-Y direction, 180° from front)
+    float back_sensor_global_x = state.x + sensor_offset_back_x * cos_theta - sensor_offset_back_y * sin_theta;
+    float back_sensor_global_y = state.y + sensor_offset_back_x * sin_theta + sensor_offset_back_y * cos_theta;
+    
+    float back_sensor_angle = theta_rad + PI; // Back sensor points backward
+    
+    // Distance to south wall (y = 0) along sensor direction  
+    if (fabs(cos(back_sensor_angle)) > MIN_ANGLE_COS && cos(back_sensor_angle) < 0) {
+        float dist = back_sensor_global_y / (-cos(back_sensor_angle));
+        if (dist > 0 && dist < MAX_LIDAR_RANGE) {
+            predicted.b = dist;
+        } else {
+            predicted.b = MAX_LIDAR_RANGE;
+        }
+    } else {
+        predicted.b = MAX_LIDAR_RANGE;
+    }
+    
+    // Left sensor prediction (-X direction, 90° left from front)
+    float left_sensor_global_x = state.x + sensor_offset_left_x * cos_theta - sensor_offset_left_y * sin_theta;
+    float left_sensor_global_y = state.y + sensor_offset_left_x * sin_theta + sensor_offset_left_y * cos_theta;
+    
+    float left_sensor_angle = theta_rad + PI/2.0f; // Left sensor points left
+    
+    // Distance to west wall (x = 0) along sensor direction
+    if (fabs(sin(left_sensor_angle)) > MIN_ANGLE_COS && sin(left_sensor_angle) < 0) {
+        float dist = left_sensor_global_x / (-sin(left_sensor_angle));
+        if (dist > 0 && dist < MAX_LIDAR_RANGE) {
+            predicted.l = dist;
+        } else {
+            predicted.l = MAX_LIDAR_RANGE;
+        }
+    } else {
+        predicted.l = MAX_LIDAR_RANGE;
+    }
+    
+    // Right sensor prediction (+X direction, 90° right from front)
+    float right_sensor_global_x = state.x + sensor_offset_right_x * cos_theta - sensor_offset_right_y * sin_theta;
+    float right_sensor_global_y = state.y + sensor_offset_right_x * sin_theta + sensor_offset_right_y * cos_theta;
+    
+    float right_sensor_angle = theta_rad - PI/2.0f; // Right sensor points right
+    
+    // Distance to east wall (x = FIELD_WIDTH) along sensor direction
+    if (fabs(sin(right_sensor_angle)) > MIN_ANGLE_COS && sin(right_sensor_angle) > 0) {
+        float dist = (FIELD_WIDTH - right_sensor_global_x) / sin(right_sensor_angle);
+        if (dist > 0 && dist < MAX_LIDAR_RANGE) {
+            predicted.r = dist;
+        } else {
+            predicted.r = MAX_LIDAR_RANGE;
+        }
+    } else {
+        predicted.r = MAX_LIDAR_RANGE;
+    }
+    
+    // ========================================
+    // PREDICT OTHER SENSOR READINGS
+    // ========================================
+    
+    // Rotation encoder: predict based on accumulated distance traveled
+    // For a simplified model, we can predict the encoder reading based on current state
+    // This assumes the encoder measures distance traveled by the tracking wheel
+    
+    // Get current encoder reading as baseline (this should be maintained as part of state)
+    // For now, predict no change from current reading (stationary prediction)
+    // TODO: Add encoder position to State struct for proper tracking
+    predicted.rotation = 0; // Placeholder - needs proper encoder position tracking
+    
+    // Heading: predict IMU reading (should match state heading)
+    predicted.heading = state.heading * 180.0f / PI; // Convert radians to degrees
+    
+    // ========================================
+    // BOUNDS CHECKING
+    // ========================================
+    
+    // Clamp distance predictions to valid sensor range
+    predicted.f = std::max(0.39f, std::min(MAX_LIDAR_RANGE, predicted.f));
+    predicted.b = std::max(0.39f, std::min(MAX_LIDAR_RANGE, predicted.b));
+    predicted.l = std::max(0.39f, std::min(MAX_LIDAR_RANGE, predicted.l));
+    predicted.r = std::max(0.39f, std::min(MAX_LIDAR_RANGE, predicted.r));
+    
+    return predicted;
+}
+
+UKF::UKF(OWDrivetrain& drivetrain, State state, State mean, State sd, std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> p_noise, std::array<std::array<float, MEASUREMENT_DIMENSIONS>, MEASUREMENT_DIMENSIONS> m_noise, float alpha, float beta, float kappa, std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> se_cov):
     drivetrain(drivetrain),
     current(state),
     mean(mean),
@@ -1189,7 +1498,7 @@ UKF::UKF(OWDrivetrain& drivetrain, State state, State mean, State sd, std::array
     kappa(kappa),
     se_cov(se_cov) // array with all 0
 {
-    scaling_factor = pow(alpha, 2) * (num_states + kappa);
+    // REMOVED: scaling_factor calculation - now calculated locally as lambda
     
     float current_state[7] = {current.x, current.y, current.heading, current.lv, current.av, current.imu_bias, current.encoder_bias};
 
@@ -1215,8 +1524,8 @@ State UKF::get_estimate() {
 }
 
 void UKF::set_num_sigma_points() {
-    // Number of sigma points is already defined as 2n+1 where n is STATE_DIMENSIONS
-    num_states = 2*STATE_DIMENSIONS+1;
+    // Number of sigma points is already defined as NUM_SIGMA_POINTS = 2n+1 where n is STATE_DIMENSIONS
+    // This function is now obsolete since we use constexpr NUM_SIGMA_POINTS = 15
 }
 
 State& State::operator+=(const State& rhs) {
@@ -1230,25 +1539,63 @@ State& State::operator+=(const State& rhs) {
     return *this;
 }
 
-inline State operator+(const State& lhs, const State& rhs) {
+State operator+(const State& lhs, const State& rhs) {
     State result = lhs;
     result += rhs;
     return result;
 }
 
 std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> UKF::matrix_sqrt(std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> matrix){
-    float trace = trace_mat_77(matrix); // Trace Matrix
-    float det = det_mat_77(matrix); // Determinant 
-    // Identity matrix
-
-    return multiply_const_mat(add_mat(matrix, multiply_const_mat(identity_mat, sqrt(det))),(1/sqrt(trace+2*sqrt(det))));
+    // Cholesky decomposition: finds L such that L * L^T = matrix
+    // This is the mathematically correct "square root" for UKF sigma points
+    
+    std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> L;
+    
+    // Initialize to zero
+    for (int i = 0; i < STATE_DIMENSIONS; i++) {
+        for (int j = 0; j < STATE_DIMENSIONS; j++) {
+            L[i][j] = 0.0f;
+        }
+    }
+    
+    // Cholesky decomposition algorithm
+    for (int i = 0; i < STATE_DIMENSIONS; i++) {
+        for (int j = 0; j <= i; j++) {
+            float sum = 0.0f;
+            
+            if (j == i) { // Diagonal elements
+                for (int k = 0; k < j; k++) {
+                    sum += L[j][k] * L[j][k];
+                }
+                float val = matrix[j][j] - sum;
+                if (val <= 0.0f) {
+                    // Matrix is not positive definite - add regularization
+                    val = 1e-6f;
+                }
+                L[j][j] = sqrt(val);
+            } else { // Off-diagonal elements
+                for (int k = 0; k < j; k++) {
+                    sum += L[i][k] * L[j][k];
+                }
+                if (L[j][j] != 0.0f) {
+                    L[i][j] = (matrix[i][j] - sum) / L[j][j];
+                } else {
+                    L[i][j] = 0.0f;
+                }
+            }
+        }
+    }
+    
+    return L;
 }
 
-std::array<float, STATE_DIMENSIONS> UKF::col_sqrt(std::array<float, STATE_DIMENSIONS> col) { // with scaling factor
+std::array<float, STATE_DIMENSIONS> UKF::col_sqrt(std::array<float, STATE_DIMENSIONS> col) { 
+    // This function is now obsolete since we use proper Cholesky decomposition
+    // in set_sigma_points(). Keeping for backward compatibility but not used.
     std::array<float, STATE_DIMENSIONS> result;
     
     for (int i=0;i<STATE_DIMENSIONS;i++) {
-        result[i]=sqrt(col[i] * scaling_factor);
+        result[i]=sqrt(col[i]); // Removed scaling_factor reference
     }
 
     return result;
@@ -1267,22 +1614,43 @@ State UKF::list_to_state(std::array<float, STATE_DIMENSIONS> col) {
 }
 
 void UKF::set_sigma_points() {
-    // Set sigma points using root cP, c = alpha^2 (M + kappa); M -> number of states/sigma points
+    // Set sigma points using CORRECT UKF sigma point generation
+    // CRITICAL: Take Cholesky FIRST, then scale the result
+    
+    // First sigma point is the mean state
     points_sigma[0] = current; 
-
-    for (int i=0;i<STATE_DIMENSIONS;i++) {
-        std::array<float, STATE_DIMENSIONS> col = UKF::matrix_sqrt(multiply_const_mat(se_cov, scaling_factor))[i];
-        offset_sigma[i] = list_to_state(col);
-
+    
+    // Calculate lambda for scaling
+    float lambda = alpha * alpha * (STATE_DIMENSIONS + kappa) - STATE_DIMENSIONS;
+    float scale = sqrt(STATE_DIMENSIONS + lambda);
+    
+    // STEP 1: Get Cholesky decomposition of covariance FIRST
+    std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> L = 
+        matrix_sqrt(se_cov);
+    
+    // STEP 2: THEN scale the Cholesky factor (not the covariance!)
+    // Mathematical property: chol(c*P) = sqrt(c) * chol(P)
+    std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> scaled_L = 
+        multiply_const_mat(L, scale);
+    
+    // Generate positive sigma points (indices 1 to STATE_DIMENSIONS)
+    for (int i = 0; i < STATE_DIMENSIONS; i++) {
+        std::array<float, STATE_DIMENSIONS> col;
+        for (int j = 0; j < STATE_DIMENSIONS; j++) {
+            col[j] = scaled_L[j][i];  // Use scaled_L, not L!
+        }
+        State offset = list_to_state(col);
+        points_sigma[i + 1] = current + offset;
     }
-
-    for (int i=0;i<STATE_DIMENSIONS;i++) {
-        std::array<float, STATE_DIMENSIONS> col = UKF::matrix_sqrt(multiply_const_mat(se_cov, -scaling_factor))[i];
-        offset_sigma[i+STATE_DIMENSIONS] = list_to_state(col);
-    }
-
-    for (int i=0;i<2*num_states;i++) {
-        points_sigma[i] = current + offset_sigma[i];
+    
+    // Generate negative sigma points (indices STATE_DIMENSIONS+1 to 2*STATE_DIMENSIONS)
+    for (int i = 0; i < STATE_DIMENSIONS; i++) {
+        std::array<float, STATE_DIMENSIONS> col;
+        for (int j = 0; j < STATE_DIMENSIONS; j++) {
+            col[j] = -scaled_L[j][i];  // Use scaled_L, not L!
+        }
+        State offset = list_to_state(col);
+        points_sigma[STATE_DIMENSIONS + i + 1] = current + offset;
     }
 } 
 
@@ -1293,16 +1661,20 @@ State& State::operator*(const float factor) {
     this->lv *= factor;
     this->av *= factor;
     this->imu_bias *= factor;
-    this->encoder_bias*= factor;
+    this->encoder_bias *= factor;
+    return *this;  // CRITICAL: Missing return statement
 }
 
 void UKF::compute_predicted_measurements() {
     /*
-    Compute predicted measurement for each sigma point
+    Compute predicted measurement for each sigma point using measurement model h(x)
+    This predicts what sensors SHOULD read given each sigma point state
     */
     
-    for (int i=0;i<2*(2*STATE_DIMENSIONS+1);i++) {
-        measurement_sigma[i] = drivetrain.get_measurement(points_sigma[i]);
+    // CRITICAL FIX: Loop should be 0 to (2*STATE_DIMENSIONS+1), not 2*(2*STATE_DIMENSIONS+1)
+    // We have 15 sigma points, not 30!
+    for (int i = 0; i < 2*STATE_DIMENSIONS + 1; i++) {
+        measurement_sigma[i] = drivetrain.predict_measurement_from_state(points_sigma[i]);
     }
 }
 
@@ -1313,9 +1685,10 @@ Measurement& Measurement::operator+=(const Measurement& rhs) {
     this->b += rhs.b;
     this->rotation += rhs.rotation;
     this->heading += rhs.heading;
+    return *this;
 }
 
-inline Measurement operator+(const Measurement& lhs, const Measurement& rhs) {
+Measurement operator+(const Measurement& lhs, const Measurement& rhs) {
     Measurement result = lhs;
     result += rhs;
     return result;
@@ -1328,9 +1701,10 @@ Measurement& Measurement::operator-=(const Measurement& rhs) {
     this->b -= rhs.b;
     this->rotation -= rhs.rotation;
     this->heading -= rhs.heading;
+    return *this;
 }
 
-inline Measurement operator-(const Measurement& lhs, const Measurement& rhs) {
+Measurement operator-(const Measurement& lhs, const Measurement& rhs) {
     Measurement result = lhs;
     result -= rhs;
     return result;
@@ -1343,6 +1717,7 @@ Measurement& Measurement::operator*(const float& rhs) {
     this->b *= rhs;
     this->rotation *= rhs;
     this->heading *= rhs;
+    return *this;
 }
 
 Measurement& Measurement::operator*(const Measurement& rhs) {
@@ -1352,37 +1727,54 @@ Measurement& Measurement::operator*(const Measurement& rhs) {
     this->b *= rhs.b;
     this->rotation *= rhs.rotation;
     this->heading *= rhs.heading;
+    return *this;
 }
 
 void UKF::combine_predicted_measurements() {
     /*
+    Combine predicted measurements using correct UKF weights
     */
 
-    mean_weight[0]=1-num_states/(pow(alpha,2)*(num_states+kappa));
-
-    for (int i=1;i<2*num_states;i++) {
-        mean_weight[i] = 1/(2*pow(alpha,2)*(num_states+kappa));
+    // CRITICAL FIX: Use standard UKF weight formulas
+    float lambda = alpha * alpha * (STATE_DIMENSIONS + kappa) - STATE_DIMENSIONS;
+    
+    // Mean weight for first sigma point (mean)
+    mean_weight[0] = lambda / (STATE_DIMENSIONS + lambda);
+    
+    // Weights for remaining sigma points
+    float remaining_weight = 1.0f / (2.0f * (STATE_DIMENSIONS + lambda));
+    for (int i = 1; i < 2*STATE_DIMENSIONS + 1; i++) {
+        mean_weight[i] = remaining_weight;
     }
 
     // Reset predicted_measurement to zero first
     predicted_measurement = {0,0,0,0,0,0};
 
-    for (int i=0; i<2*num_states; i++) {
+    // FIXED: Use correct loop bounds
+    for (int i = 0; i < 2*STATE_DIMENSIONS + 1; i++) {
         predicted_measurement += measurement_sigma[i] * mean_weight[i];
     }
 }
 
 void UKF::est_cov_predicted_measurements() {
     /*
-    INCOMPLETE - NEED TO ADD NOISE MATRIX
+    Estimate covariance of predicted measurements using correct weights
     */
 
-    cov_weight[0] = (2 - pow(alpha,2) + beta) - num_states/(pow(alpha,2)*(num_states + kappa));
+    // CRITICAL FIX: Use standard UKF covariance weight formulas
+    float lambda = alpha * alpha * (STATE_DIMENSIONS + kappa) - STATE_DIMENSIONS;
+    
+    // Covariance weight for first sigma point
+    cov_weight[0] = lambda / (STATE_DIMENSIONS + lambda) + (1 - alpha*alpha + beta);
+    
+    // Covariance weights for remaining sigma points  
+    float remaining_cov_weight = 1.0f / (2.0f * (STATE_DIMENSIONS + lambda));
+    for (int i = 1; i < 2*STATE_DIMENSIONS + 1; i++) {
+        cov_weight[i] = remaining_cov_weight;
+    }
 
-    for (int i=0;i<2*num_states;i++) {
-        if (i>0) {
-            cov_weight[i] = 1/(2*pow(alpha,2)*(num_states + kappa));
-        }
+    // FIXED: Use correct loop bounds
+    for (int i = 0; i < 2*STATE_DIMENSIONS + 1; i++) {
 
         measurement_vals[0][i] = measurement_sigma[i].l;
         measurement_vals[1][i] = measurement_sigma[i].r;
@@ -1392,18 +1784,21 @@ void UKF::est_cov_predicted_measurements() {
         measurement_vals[5][i] = measurement_sigma[i].heading;
     }
 
-    measurement_vals[0][2*num_states+1] = predicted_measurement.l;
-    measurement_vals[1][2*num_states+1] = predicted_measurement.r;
-    measurement_vals[2][2*num_states+1] = predicted_measurement.f;
-    measurement_vals[3][2*num_states+1] = predicted_measurement.b;
-    measurement_vals[4][2*num_states+1] = predicted_measurement.rotation;
-    measurement_vals[5][2*num_states+1] = predicted_measurement.heading;
+    // Store predicted measurement for comparison
+    int mean_idx = 2*STATE_DIMENSIONS + 1;  // Index for storing mean
+    measurement_vals[0][mean_idx] = predicted_measurement.l;
+    measurement_vals[1][mean_idx] = predicted_measurement.r;
+    measurement_vals[2][mean_idx] = predicted_measurement.f;
+    measurement_vals[3][mean_idx] = predicted_measurement.b;
+    measurement_vals[4][mean_idx] = predicted_measurement.rotation;
+    measurement_vals[5][mean_idx] = predicted_measurement.heading;
 
     for (int i=0;i<MEASUREMENT_DIMENSIONS;i++) {
         for (int j=0;j<MEASUREMENT_DIMENSIONS;j++) {
             measurement_cov[i][j] = 0;
-            for (int k=0;k<2*num_states;k++) {
-                measurement_cov[i][j] += cov_weight[k]*(measurement_vals[i][k]-measurement_vals[i][2*num_states+1]) * (measurement_vals[j][k]-measurement_vals[j][2*num_states+1]);
+            // FIXED: Use correct loop bounds for sigma points
+            for (int k=0; k < 2*STATE_DIMENSIONS + 1; k++) {
+                measurement_cov[i][j] += cov_weight[k]*(measurement_vals[i][k]-measurement_vals[i][mean_idx]) * (measurement_vals[j][k]-measurement_vals[j][mean_idx]);
             }
             // Add measurement noise R to the measurement covariance
             measurement_cov[i][j] += measurement_noise[i][j];
@@ -1412,11 +1807,8 @@ void UKF::est_cov_predicted_measurements() {
 }
 
 void UKF::state_to_list() {
-    for (int i=0;i<2*num_states;i++) {
-        if (i>0) {
-            cov_weight[i] = 1/(2*pow(alpha,2)*(num_states + kappa));
-        }
-
+    // FIXED: Correct loop bounds and remove redundant weight calculation
+    for (int i = 0; i < 2*STATE_DIMENSIONS + 1; i++) {
         state_vals[0][i] = points_sigma[i].x;
         state_vals[1][i] = points_sigma[i].y;
         state_vals[2][i] = points_sigma[i].heading;
@@ -1426,33 +1818,45 @@ void UKF::state_to_list() {
         state_vals[6][i] = points_sigma[i].encoder_bias;
     }
 
-    state_vals[0][2*num_states+1] = predicted_state.x;
-    state_vals[1][2*num_states+1] = predicted_state.y;
-    state_vals[2][2*num_states+1] = predicted_state.heading;
-    state_vals[3][2*num_states+1] = predicted_state.lv;
-    state_vals[4][2*num_states+1] = predicted_state.av;
-    state_vals[5][2*num_states+1] = predicted_state.imu_bias;
-    state_vals[6][2*num_states+1] = predicted_state.encoder_bias;
+    // Store predicted state for comparison  
+    int mean_idx = 2*STATE_DIMENSIONS + 1;
+    state_vals[0][mean_idx] = predicted_state.x;
+    state_vals[1][mean_idx] = predicted_state.y;
+    state_vals[2][mean_idx] = predicted_state.heading;
+    state_vals[3][mean_idx] = predicted_state.lv;
+    state_vals[4][mean_idx] = predicted_state.av;
+    state_vals[5][mean_idx] = predicted_state.imu_bias;
+    state_vals[6][mean_idx] = predicted_state.encoder_bias;
 }
 
 void UKF::est_cross_cov() {
     /*
-    State * Measurement function to return a matrix xy
     Cross-covariance between state and measurement
+    P_xy = Σ W_c[i] * (X[i] - x̄) * (Z[i] - z̄)^T
     */
     
     // Populate state and measurement arrays
     state_to_list();
     
     // Initialize cross-covariance matrix
-    for (int i=0;i<STATE_DIMENSIONS;i++) {
-        for (int j=0;j<MEASUREMENT_DIMENSIONS;j++) {
+    for (int i = 0; i < STATE_DIMENSIONS; i++) {
+        for (int j = 0; j < MEASUREMENT_DIMENSIONS; j++) {
             se_me_cov[i][j] = 0;
-            // Include all sigma points (start from k=0, not k=1)
-            for (int k=0;k<2*num_states;k++) {
-                se_me_cov[i][j] += cov_weight[k] * 
-                    (state_vals[i][k]-state_vals[i][2*num_states+1]) * 
-                    (measurement_vals[j][k]-measurement_vals[j][2*num_states+1]);
+            // FIXED: Correct loop bounds for sigma points
+            int mean_idx = 2*STATE_DIMENSIONS + 1;
+            for (int k = 0; k < 2*STATE_DIMENSIONS + 1; k++) {
+                float state_diff = state_vals[i][k] - state_vals[i][mean_idx];
+                float measurement_diff = measurement_vals[j][k] - measurement_vals[j][mean_idx];
+                
+                // Special handling for heading differences (wrap angles)
+                if (i == 2) { // heading state
+                    state_diff = normalize_angle_symmetric(state_diff);
+                }
+                if (j == 5) { // heading measurement
+                    measurement_diff = normalize_angle_symmetric(measurement_diff);
+                }
+                
+                se_me_cov[i][j] += cov_weight[k] * state_diff * measurement_diff;
             }
         }
     }
@@ -1463,17 +1867,22 @@ void UKF::obtain_est() {
     Obtain the estimated state and state estimation error covariance at time step k.
     */
     
-    // Get actual measurement from drivetrain
+    // Get actual measurement from drivetrain (real sensor readings)
     Measurement actual_measurement = drivetrain.get_measurement(current);
     
-    // Calculate measurement residual
+    // Calculate measurement residual with proper angle handling
     Measurement residual;
     residual.l = actual_measurement.l - predicted_measurement.l;
     residual.r = actual_measurement.r - predicted_measurement.r;
     residual.f = actual_measurement.f - predicted_measurement.f;
     residual.b = actual_measurement.b - predicted_measurement.b;
     residual.rotation = actual_measurement.rotation - predicted_measurement.rotation;
-    residual.heading = actual_measurement.heading - predicted_measurement.heading;
+    
+    // CRITICAL: Normalize heading residual to handle angle wrapping
+    // Convert both to radians for proper normalization
+    float actual_heading_rad = actual_measurement.heading * M_PI / 180.0f;
+    float predicted_heading_rad = predicted_measurement.heading * M_PI / 180.0f;
+    residual.heading = normalize_angle_symmetric(actual_heading_rad - predicted_heading_rad) * 180.0f / M_PI;
     
     // Convert residual to vector for matrix operations
     float residual_vec[MEASUREMENT_DIMENSIONS] = {
@@ -1515,36 +1924,82 @@ void UKF::obtain_est() {
         multiply_mat_76_67(k_pyy, transpose_mat_76(kalman_gain));
     
     se_cov = subtract_mat_77(predicted_se_cov, k_pyy_kt);
+    
+    // Validate and clamp the updated state
+    validate_and_clamp_state();
 }
 
-void UKF::predict_set_sigma_points() {
-    // Set sigma points using root cP, c = alpha^2 (M + kappa); M -> number of states/sigma points
-    points_sigma[0] = next; 
-
-    for (int i=0;i<STATE_DIMENSIONS;i++) {
-        std::array<float, STATE_DIMENSIONS> col = UKF::matrix_sqrt(multiply_const_mat(se_cov, scaling_factor))[i];
-        offset_sigma[i] = list_to_state(col);
-
+void UKF::validate_and_clamp_state() {
+    // Clamp position to field bounds with small margin
+    const float MARGIN = 1.0f; // 1 inch margin from field edges
+    current.x = std::max(MARGIN, std::min(FIELD_WIDTH - MARGIN, current.x));
+    current.y = std::max(MARGIN, std::min(FIELD_HEIGHT - MARGIN, current.y));
+    
+    // Normalize heading to [-π, π]
+    current.heading = normalize_angle_symmetric(current.heading);
+    
+    // Clamp velocities to reasonable bounds
+    const float MAX_LINEAR_VEL = 100.0f;  // inches/sec
+    const float MAX_ANGULAR_VEL = 2.0f * M_PI;  // rad/sec
+    current.lv = std::max(-MAX_LINEAR_VEL, std::min(MAX_LINEAR_VEL, current.lv));
+    current.av = std::max(-MAX_ANGULAR_VEL, std::min(MAX_ANGULAR_VEL, current.av));
+    
+    // Clamp biases to reasonable ranges
+    const float MAX_IMU_BIAS = 0.1f;  // rad/sec
+    const float MAX_ENCODER_BIAS = 10.0f;  // inches/sec
+    current.imu_bias = std::max(-MAX_IMU_BIAS, std::min(MAX_IMU_BIAS, current.imu_bias));
+    current.encoder_bias = std::max(-MAX_ENCODER_BIAS, std::min(MAX_ENCODER_BIAS, current.encoder_bias));
+    
+    // Check for NaN or inf values
+    if (std::isnan(current.x) || std::isnan(current.y) || std::isnan(current.heading) ||
+        std::isinf(current.x) || std::isinf(current.y) || std::isinf(current.heading)) {
+        
+        // Reset to a safe default state
+        current.x = FIELD_WIDTH / 2.0f;
+        current.y = FIELD_HEIGHT / 2.0f;
+        current.heading = 0.0f;
+        current.lv = 0.0f;
+        current.av = 0.0f;
+        current.imu_bias = 0.0f;
+        current.encoder_bias = 0.0f;
+        
+        // Also reset covariance to prevent further issues
+        for (int i = 0; i < STATE_DIMENSIONS; i++) {
+            for (int j = 0; j < STATE_DIMENSIONS; j++) {
+                se_cov[i][j] = (i == j) ? 1.0f : 0.0f; // Identity matrix
+            }
+        }
     }
+}
 
-    for (int i=0;i<STATE_DIMENSIONS;i++) {
-        std::array<float, STATE_DIMENSIONS> col = UKF::matrix_sqrt(multiply_const_mat(se_cov, -scaling_factor))[i];
-        offset_sigma[i+STATE_DIMENSIONS] = list_to_state(col);
+void UKF::enforce_covariance_symmetry() {
+    // Ensure covariance matrix is symmetric by averaging off-diagonal elements
+    for (int i = 0; i < STATE_DIMENSIONS; i++) {
+        for (int j = i + 1; j < STATE_DIMENSIONS; j++) {
+            float avg = (se_cov[i][j] + se_cov[j][i]) / 2.0f;
+            se_cov[i][j] = avg;
+            se_cov[j][i] = avg;
+        }
+        // Ensure diagonal elements are positive (add small regularization if needed)
+        if (se_cov[i][i] <= 0.0f) {
+            se_cov[i][i] = 1e-6f;
+        }
     }
+}
 
-    for (int i=0;i<2*num_states;i++) {
-        points_sigma[i] = next + offset_sigma[i];
-    }
-} 
+// DELETED: predict_set_sigma_points() was mathematically wrong and not needed
+// - It tried to take Cholesky of negative matrices (undefined!)
+// - It used wrong covariance matrix (se_cov instead of predicted_se_cov)
+// - UKF doesn't need separate sigma point generation in predict step 
 
 State UKF::state_transition(const State& sigma_point, double left_voltage, double right_voltage, double dt) {
     State next_state;
     
     // Convert voltages to wheel velocities (simplified model)
-    // Assume linear relationship between voltage and wheel speed
+    // TODO: Make these configurable parameters instead of hardcoded constants
     const double voltage_to_velocity = 0.1; // This should be calibrated based on your robot
-    const double wheel_radius = 0.05; // meters, adjust based on your robot
-    const double track_width = 0.3; // meters, distance between wheels, adjust based on your robot
+    const double wheel_radius = 2.75; // inches, adjust based on your robot
+    const double track_width = 16; // inches, distance between wheels, adjust based on your robot
     
     double left_wheel_velocity = left_voltage * voltage_to_velocity;
     double right_wheel_velocity = right_voltage * voltage_to_velocity;
@@ -1560,7 +2015,7 @@ State UKF::state_transition(const State& sigma_point, double left_voltage, doubl
     // State propagation using kinematic model
     next_state.x = sigma_point.x + linear_velocity * cos(sigma_point.heading) * dt;
     next_state.y = sigma_point.y + linear_velocity * sin(sigma_point.heading) * dt;
-    next_state.heading = sigma_point.heading + angular_velocity * dt;
+    next_state.heading = normalize_angle_symmetric(sigma_point.heading + angular_velocity * dt);
     
     // Velocity states with simple dynamics
     next_state.lv = linear_velocity; // Could add acceleration model here
@@ -1575,16 +2030,20 @@ State UKF::state_transition(const State& sigma_point, double left_voltage, doubl
 
 void UKF::apply_state_transition(double left_voltage, double right_voltage, double dt) {
     // Apply state transition function to all sigma points to get predicted sigma points
-    for (int i = 0; i < 2*num_states; i++) {
+    // FIXED: Correct loop bounds for sigma points
+    for (int i = 0; i < 2*STATE_DIMENSIONS + 1; i++) {
         predicted_points_sigma[i] = state_transition(points_sigma[i], left_voltage, right_voltage, dt);
     }
 }
 
 void UKF::compute_predicted_states() {
     next = {0,0,0,0,0,0,0};
-    for (int i=0;i<2*num_states;i++) {
+    // FIXED: Correct loop bounds and normalize heading
+    for (int i = 0; i < 2*STATE_DIMENSIONS + 1; i++) {
         next += predicted_points_sigma[i]*mean_weight[i];
     }
+    // Normalize the predicted heading
+    next.heading = normalize_angle_symmetric(next.heading);
 }
 void UKF::compute_predicted_cov() {
     for (int i = 0; i < STATE_DIMENSIONS; i++) {
@@ -1592,11 +2051,12 @@ void UKF::compute_predicted_cov() {
             predicted_se_cov[i][j] = 0;
         }
     }
-    for (int i = 0; i < 2*num_states; i++) {
+    // FIXED: Correct loop bounds and angle difference handling
+    for (int i = 0; i < 2*STATE_DIMENSIONS + 1; i++) {
         State diff;
         diff.x = predicted_points_sigma[i].x - next.x;
         diff.y = predicted_points_sigma[i].y - next.y;
-        diff.heading = predicted_points_sigma[i].heading - next.heading;
+        diff.heading = normalize_angle_symmetric(predicted_points_sigma[i].heading - next.heading);
         diff.lv = predicted_points_sigma[i].lv - next.lv;
         diff.av = predicted_points_sigma[i].av - next.av;
         diff.imu_bias = predicted_points_sigma[i].imu_bias - next.imu_bias;
@@ -1617,6 +2077,9 @@ void UKF::compute_predicted_cov() {
             predicted_se_cov[i][j] += process_noise[i][j];
         }
     }
+    
+    // Ensure predicted covariance stays symmetric and positive definite
+    enforce_covariance_symmetry();
 }
 
 void UKF::correct() {
@@ -1644,27 +2107,46 @@ void UKF::correct() {
 }
 
 void UKF::predict(double left_voltage, double right_voltage, double dt) {
-    // choose sigma points
-    predict_set_sigma_points();
-        // determine each sigma point offset vector
-        // determine 
-
-    // apply state transition to sigma points
+    // CORRECT UKF PREDICT FLOW:
+    // 1. Generate sigma points around CURRENT state and covariance
+    // 2. Propagate sigma points through motion model
+    // 3. Compute predicted mean and covariance from propagated points
+    
+    // STEP 1: Generate sigma points around current state
+    set_sigma_points();  // Uses current and se_cov
+    
+    // STEP 2: Apply state transition to propagate sigma points forward
     apply_state_transition(left_voltage, right_voltage, dt);
 
-    // using state transition compute predicted State
+    // STEP 3: Compute predicted state mean from propagated sigma points
     compute_predicted_states();
-        // compute predicted state
-        // compute weight_mean for each sigma point
     
-    // compute covariance of predicted state
+    // STEP 4: Compute predicted covariance from propagated sigma points
     compute_predicted_cov();
-        // compute state estimate error matrix
-        // weight covariance for each sigma point from 1-2*num_states -> (2-pow(alpha,2)+beta) - num_states/(pow(alpha, 2) * (num_states + kappa))
+    
+    // STEP 5: Update current state to predicted result
+    current = next;
+    se_cov = predicted_se_cov;
+    
+    // Increment time step for predict cycle
+    time_step++;
 } 
 
 void UKF::run(double left_voltage, double right_voltage, double dt) {
+    // Legacy method - now prefer manual predict/correct calls for proper ordering
+    // This maintains backward compatibility but is not the recommended approach
     this->correct();
     this->predict(left_voltage, right_voltage, dt);
     time_step++;
+}
+
+bool OWDrivetrain::is_front_sensor_within_distance(float target_distance, float tolerance) {
+    const float MM_TO_INCHES = 1.0f / 25.4f;
+    float current_distance = front_dist->get() * MM_TO_INCHES; // Convert to inches
+    
+    if (current_distance < 0) {
+        return false;
+    }
+    
+    return fabs(current_distance - target_distance) <= tolerance;
 }

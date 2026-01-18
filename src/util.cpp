@@ -138,9 +138,6 @@ std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> multiply_const
     return result;
 }
 
-float deg_to_rad(float angle) {
-    return M_PI*angle/180;
-}
 
 // Additional matrix operations for UKF
 std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> subtract_mat_77(
@@ -162,7 +159,7 @@ std::array<std::array<float, MEASUREMENT_DIMENSIONS>, MEASUREMENT_DIMENSIONS> in
     std::array<std::array<float, MEASUREMENT_DIMENSIONS>, MEASUREMENT_DIMENSIONS> matrix) {
     
     std::array<std::array<float, MEASUREMENT_DIMENSIONS>, MEASUREMENT_DIMENSIONS> result;
-    std::array<std::array<float, MEASUREMENT_DIMENSIONS>, MEASUREMENT_DIMENSIONS * 2> augmented;
+    std::array<std::array<float, MEASUREMENT_DIMENSIONS * 2>, MEASUREMENT_DIMENSIONS> augmented;
     
     // Create augmented matrix [A | I]
     for (int i = 0; i < MEASUREMENT_DIMENSIONS; i++) {
@@ -251,8 +248,8 @@ std::array<std::array<float, MEASUREMENT_DIMENSIONS>, STATE_DIMENSIONS> transpos
     
     std::array<std::array<float, MEASUREMENT_DIMENSIONS>, STATE_DIMENSIONS> result;
     
-    for (int i = 0; i < MEASUREMENT_DIMENSIONS; i++) {
-        for (int j = 0; j < STATE_DIMENSIONS; j++) {
+    for (int i = 0; i < STATE_DIMENSIONS; i++) {
+        for (int j = 0; j < MEASUREMENT_DIMENSIONS; j++) {
             result[i][j] = matrix[j][i];
         }
     }

@@ -1,6 +1,9 @@
 #pragma once
 #include "api.h"
 
+// Forward declarations
+class OWDrivetrain;
+
 struct Point {
     float x;
     float y;
@@ -102,9 +105,9 @@ class PurePursuit {
 // sources: MATLAB, "Kalman and Bayesian Filters in Python" by Roger R Labbe Jr
 class UKF {
     private:
-        // paramters
+        // UKF paramters
         float alpha, beta, kappa = 0;
-        float scaling_factor = 1;
+        // REMOVED: scaling_factor - calculate lambda locally instead
 
         // Kalman Gain
         float K = 0;
@@ -122,14 +125,14 @@ class UKF {
         // Measured State
         State measured_state;
 
-        // each time step: state, measurement, 
-        int num_states = 2*STATE_DIMENSIONS+1;// 2n+1; n is number of dimensions of the state
+        // Number of sigma points (this is NOT the number of state dimensions!)
+        static constexpr int NUM_SIGMA_POINTS = 2*STATE_DIMENSIONS + 1;  // 15 sigma points
 
         int time_step = 0; // number of cycles, every 10 ms is 1 cycle?
 
         // matrices
         std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> process_noise;
-        std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> measurement_noise;
+        std::array<std::array<float, MEASUREMENT_DIMENSIONS>, MEASUREMENT_DIMENSIONS>measurement_noise;
         std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> se_cov; // state estimation error covariance matrix
         std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> predicted_se_cov; // predicted k+1 
         std::array<std::array<float, MEASUREMENT_DIMENSIONS>, MEASUREMENT_DIMENSIONS> measurement_cov; // measurement covariance matrix
@@ -139,15 +142,15 @@ class UKF {
         float measurement_vals[MEASUREMENT_DIMENSIONS][2*(2*STATE_DIMENSIONS+1)+1];
 
 
-        // sigma vector
-        State points_sigma[2*(2*STATE_DIMENSIONS+1)];
-        State offset_sigma[2*(2*STATE_DIMENSIONS+1)]; // Predicted sigma estimates
-        State predicted_points_sigma[2*(2*STATE_DIMENSIONS+1)];
-        State predicted_offset_sigma[2*(2*STATE_DIMENSIONS+1)];
-        Measurement measurement_sigma[2*(2*STATE_DIMENSIONS+1)];
+        // sigma vector - FIXED: Use correct array sizes
+        State points_sigma[NUM_SIGMA_POINTS];
+        State offset_sigma[NUM_SIGMA_POINTS]; 
+        State predicted_points_sigma[NUM_SIGMA_POINTS];
+        State predicted_offset_sigma[NUM_SIGMA_POINTS];
+        Measurement measurement_sigma[NUM_SIGMA_POINTS];
         Measurement predicted_measurement;
-        std::array<float, 2*(2*STATE_DIMENSIONS+1)> mean_weight;
-        std::array<float, 2*(2*STATE_DIMENSIONS+1)> cov_weight;
+        std::array<float, NUM_SIGMA_POINTS> mean_weight;
+        std::array<float, NUM_SIGMA_POINTS> cov_weight;
         
 
         // Reference to drivetrain for measurements
@@ -158,7 +161,7 @@ class UKF {
         std::array<float, STATE_DIMENSIONS> col_sqrt(std::array<float, STATE_DIMENSIONS> col);
         State list_to_state(std::array<float, STATE_DIMENSIONS> col);
     public:
-        UKF(OWDrivetrain& drivetrain, State state, State mean, State sd, std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> p_noise, std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> m_noise, float alpha, float beta, float kappa, std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> se_cov); // initialize state
+        UKF(OWDrivetrain& drivetrain, State state, State mean, State sd, std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> p_noise, std::array<std::array<float, MEASUREMENT_DIMENSIONS>, MEASUREMENT_DIMENSIONS> m_noise, float alpha, float beta, float kappa, std::array<std::array<float, STATE_DIMENSIONS>, STATE_DIMENSIONS> se_cov); // initialize state
         State get_estimate();
         void set_num_sigma_points(); // Set number of sigma points
         void set_sigma_points(); // Set sigma points using root cP, c = alpha^2 (M + kappa); M -> number of states/sigma points
@@ -167,10 +170,11 @@ class UKF {
         void est_cov_predicted_measurements();
         void state_to_list();
         void est_cross_cov();
-        void obtain_est(); 
+        void obtain_est();
+        void validate_and_clamp_state(); // Add state validation and bounds checking
+        void enforce_covariance_symmetry(); // Ensure covariance matrix stays symmetric
 
-        // Predict
-        void predict_set_sigma_points();
+        // Predict (predict_set_sigma_points removed - was wrong)
         State state_transition(const State& sigma_point, double left_voltage, double right_voltage, double dt);
         void apply_state_transition(double left_voltage, double right_voltage, double dt);
         void compute_predicted_states();
@@ -229,7 +233,7 @@ class OWDrivetrain { // one wheel tracker drivetrain
     private:
         pros::MotorGroup left_motors;
         pros::MotorGroup right_motors;
-        pros::Rotation left_tracker;
+        pros::Rotation* left_tracker;
 
         float track_width;
         float motor_speed = 600;
@@ -253,11 +257,11 @@ class OWDrivetrain { // one wheel tracker drivetrain
 
         int tracking_type = 1;
 
-        // DISTANCE CONFIG
-        pros::Distance left_dist;
-        pros::Distance right_dist;
-        pros::Distance front_dist;
-        pros::Distance back_dist;
+        // DISTANCE CONFIG (pointers)
+        pros::Distance* left_dist;
+        pros::Distance* right_dist;
+        pros::Distance* front_dist;
+        pros::Distance* back_dist;
 
         // MONTE CARLO LOCALIZATION
         int mcl_particle_limit;
@@ -267,17 +271,28 @@ class OWDrivetrain { // one wheel tracker drivetrain
 
         State current_state;
 
+        // Sensor offset configuration
+        float sensor_offset_front_x, sensor_offset_front_y;
+        float sensor_offset_back_x, sensor_offset_back_y;
+        float sensor_offset_left_x, sensor_offset_left_y;
+        float sensor_offset_right_x, sensor_offset_right_y;
+
+    public:
         // UKF for state estimation
         UKF* ukf;
 
-    public:
-        OWDrivetrain(std::vector<std::int8_t> left_motor_ports, std::vector<std::int8_t> right_motor_ports, PID linear_pid, PID turn_pid, int motor_speed, int imu_port, int imu2_port, int left_tracker_port, float track_width, float left_tracker_offset, int left_dist_port, int right_dist_port, int front_dist_port, int back_dist_port);
+        OWDrivetrain(std::vector<std::int8_t> left_motor_ports, std::vector<std::int8_t> right_motor_ports, PID linear_pid, PID turn_pid, int motor_speed, int imu_port, int imu2_port, pros::Rotation* left_tracker_ptr, float track_width, float left_tracker_offset, pros::Distance* left_dist_ptr, pros::Distance* right_dist_ptr, pros::Distance* front_dist_ptr, pros::Distance* back_dist_ptr, UKF* ukf_instance = nullptr, float front_x_offset = 0.0f, float front_y_offset = 5.91f, float back_x_offset = 0.0f, float back_y_offset = -5.91f, float left_x_offset = -5.91f, float left_y_offset = 0.0f, float right_x_offset = 5.91f, float right_y_offset = 0.0f);
         Point get_position();
         State get_state(); // from input measurement apply state transition model.
         Measurement get_measurement(State input);
+        Measurement predict_measurement_from_state(const State& state); // Measurement model h(x)
         Pose get_pose();
-        void update_position();
+
+        // Enhanced localization system for UKF integration
+        void update_position_localization();
+        bool update_position_localization_for_ukf(); // Returns true if observation is valid enough
         void reset_position();
+        
         void move(double left_voltage, double right_voltage);
         void move_to_point(Point target_point);
         static void move_wrapper(void *param);
@@ -294,9 +309,8 @@ class OWDrivetrain { // one wheel tracker drivetrain
 
         std::vector<Measurement> sample_all_sensors(int num_samples, int delay_ms = 10);
         std::array<std::array<float, MEASUREMENT_DIMENSIONS>, MEASUREMENT_DIMENSIONS> calculate_measurement_noise_matrix(const std::vector<Measurement>& samples);
-        
-        // Enhanced localization system for UKF integration
-        void update_position_localization();
+
+        bool is_front_sensor_within_distance(float target_distance, float tolerance = 10.0f);
 
         pros::Imu imu;
         pros::Imu imu2;
